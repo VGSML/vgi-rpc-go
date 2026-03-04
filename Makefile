@@ -2,7 +2,7 @@
 
 # Configurable paths — override with env vars or on the command line.
 GO_CONFORMANCE_WORKER ?= $(CURDIR)/conformance-worker
-PYTHON ?= python3
+PYTHON ?= /Users/rusty/Development/vgi-rpc/.venv/bin/python
 export GO_CONFORMANCE_WORKER
 
 GOBIN := $(shell go env GOPATH)/bin

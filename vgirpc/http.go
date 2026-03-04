@@ -652,6 +652,17 @@ func (h *HttpServer) handleStreamExchange(w http.ResponseWriter, r *http.Request
 	}
 	inputBatch := inputReader.RecordBatch()
 
+	// Cast compatible input types if schema doesn't match exactly
+	if info.InputSchema != nil && !inputBatch.Schema().Equal(info.InputSchema) {
+		castBatch, castErr := castRecordBatch(inputBatch, info.InputSchema)
+		if castErr != nil {
+			h.writeHttpError(w, http.StatusBadRequest, castErr, nil)
+			return
+		}
+		defer castBatch.Release()
+		inputBatch = castBatch
+	}
+
 	// Extract state token from custom metadata
 	var tokenBytes []byte
 	if bwm, ok := inputBatch.(arrow.RecordBatchWithMetadata); ok {

@@ -695,6 +695,16 @@ func (s *Server) serveStream(ctx context.Context, r io.Reader, w io.Writer, req 
 		}
 	}
 
+	// Determine input schema for casting (exchange methods only)
+	var inputSchema *arrow.Schema
+	if !isProducer {
+		if info.InputSchema != nil {
+			inputSchema = info.InputSchema
+		} else if streamResult.InputSchema != nil {
+			inputSchema = streamResult.InputSchema
+		}
+	}
+
 	// Lockstep loop
 	var streamErr error
 
@@ -709,6 +719,20 @@ func (s *Server) serveStream(ctx context.Context, r io.Reader, w io.Writer, req 
 		}
 		inputBatch := inputReader.RecordBatch()
 		slog.Debug("stream: got input batch", "method", info.Name, "rows", inputBatch.NumRows(), "cols", inputBatch.NumCols())
+
+		// Cast compatible input types if schema doesn't match exactly
+		if inputSchema != nil && !inputBatch.Schema().Equal(inputSchema) {
+			castBatch, castErr := castRecordBatch(inputBatch, inputSchema)
+			if castErr != nil {
+				streamErr = castErr
+				if writeErr := writeErrorBatch(outputWriter, outputSchema, castErr, s.serverID, req.RequestID, s.debugErrors); writeErr != nil {
+					slog.Error("failed to write cast error batch", "err", writeErr)
+				}
+				break
+			}
+			defer castBatch.Release()
+			inputBatch = castBatch
+		}
 
 		// Record input stats per streaming batch
 		stats.RecordInput(inputBatch.NumRows(), batchBufferSize(inputBatch))

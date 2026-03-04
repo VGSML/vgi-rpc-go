@@ -4,12 +4,14 @@
 package vgirpc
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/compute"
 	"github.com/apache/arrow-go/v18/arrow/ipc"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 )
@@ -238,6 +240,60 @@ func writeErrorResponse(w io.Writer, schema *arrow.Schema, err error, serverID, 
 	defer writer.Close()
 
 	return writeErrorBatch(writer, schema, err, serverID, requestID, debug)
+}
+
+// castRecordBatch casts an input batch to the target schema when the schemas
+// are compatible but not identical (e.g. decimal→double, int32→int64).
+// If the schemas already match, the original batch is returned as-is.
+// Returns a TypeError if the cast fails.
+func castRecordBatch(batch arrow.RecordBatch, targetSchema *arrow.Schema) (arrow.RecordBatch, error) {
+	if batch.Schema().Equal(targetSchema) {
+		return batch, nil
+	}
+
+	if batch.NumCols() != int64(targetSchema.NumFields()) {
+		return nil, &RpcError{
+			Type:    "TypeError",
+			Message: fmt.Sprintf("Input schema mismatch: expected %d fields, got %d", targetSchema.NumFields(), batch.NumCols()),
+		}
+	}
+
+	ctx := compute.WithAllocator(context.Background(), memory.NewGoAllocator())
+	cols := make([]arrow.Array, batch.NumCols())
+	for i := range batch.NumCols() {
+		srcCol := batch.Column(int(i))
+		targetType := targetSchema.Field(int(i)).Type
+		if arrow.TypeEqual(srcCol.DataType(), targetType) {
+			srcCol.Retain()
+			cols[i] = srcCol
+			continue
+		}
+		datum, err := compute.CastDatum(ctx, compute.NewDatum(srcCol), compute.SafeCastOptions(targetType))
+		if err != nil {
+			// Release already-cast columns
+			for j := range i {
+				cols[j].Release()
+			}
+			return nil, &RpcError{
+				Type:    "TypeError",
+				Message: fmt.Sprintf("Input schema mismatch: cannot cast field %q from %s to %s", targetSchema.Field(int(i)).Name, srcCol.DataType(), targetType),
+			}
+		}
+		cols[i] = datum.(*compute.ArrayDatum).MakeArray()
+		datum.Release()
+	}
+
+	// Preserve custom metadata if present
+	var result arrow.RecordBatch
+	if bwm, ok := batch.(arrow.RecordBatchWithMetadata); ok {
+		result = array.NewRecordBatchWithMetadata(targetSchema, cols, batch.NumRows(), bwm.Metadata())
+	} else {
+		result = array.NewRecordBatch(targetSchema, cols, batch.NumRows())
+	}
+	for _, c := range cols {
+		c.Release()
+	}
+	return result, nil
 }
 
 // WriteVoidResponse writes a complete IPC stream with logs and a zero-row empty-schema response.
