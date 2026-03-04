@@ -285,15 +285,15 @@ func DynamicStreamWithHeader[P any](s *Server, name string,
 	}
 
 	s.methods[name] = &methodInfo{
-		Name:         name,
-		Type:         MethodDynamic,
-		ParamsType:   paramsType,
-		ParamsSchema: paramsSchema,
-		ResultSchema: arrow.NewSchema(nil, nil),
-		Handler:      reflect.ValueOf(handler),
+		Name:          name,
+		Type:          MethodDynamic,
+		ParamsType:    paramsType,
+		ParamsSchema:  paramsSchema,
+		ResultSchema:  arrow.NewSchema(nil, nil),
+		Handler:       reflect.ValueOf(handler),
 		ParamDefaults: extractDefaults(paramsType),
-		HasHeader:    true,
-		HeaderSchema: headerSchema,
+		HasHeader:     true,
+		HeaderSchema:  headerSchema,
 	}
 }
 
@@ -908,4 +908,3 @@ func (s *Server) availableMethods() []string {
 	sort.Strings(names)
 	return names
 }
-

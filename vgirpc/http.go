@@ -32,6 +32,11 @@ const (
 	defaultMaxBodySize = 64 << 20 // 64 MB
 )
 
+// RehydrateFunc reconstructs non-serializable fields on a deserialized stream
+// state. Called by the HTTP server after unpacking a state token. The method
+// parameter is the RPC method name (e.g. "init").
+type RehydrateFunc func(state interface{}, method string) error
+
 // RegisterStateType registers a concrete type for gob encoding so that it can
 // be serialized into HTTP state tokens. Each [ProducerState] and
 // [ExchangeState] implementation (and any types they embed) must be
@@ -61,14 +66,17 @@ type HttpServer struct {
 	mux         *http.ServeMux
 	zstdEncoder *zstd.Encoder // non-nil when response compression is enabled
 
+	rehydrateFunc      RehydrateFunc // called after unpacking state tokens
+	producerBatchLimit int           // max data batches per producer response; 0 = unlimited
+
 	// Pre-rendered HTML pages (built by initPages)
 	landingHTML  []byte
 	describeHTML []byte
 	notFoundHTML []byte
 
 	// Page configuration
-	protocolName      string
-	repoURL           string
+	protocolName       string
+	repoURL            string
 	enableLandingPage  bool
 	enableDescribePage bool
 	enableNotFoundPage bool
@@ -217,6 +225,22 @@ func (h *HttpServer) SetCompressionLevel(level int) {
 		panic(fmt.Sprintf("vgirpc: failed to create zstd encoder: %v", err))
 	}
 	h.zstdEncoder = enc
+}
+
+// SetRehydrateFunc sets a callback that reconstructs non-serializable fields
+// on deserialized stream state. Called after unpacking a state token in
+// exchange and producer continuation requests.
+func (h *HttpServer) SetRehydrateFunc(fn RehydrateFunc) {
+	h.rehydrateFunc = fn
+}
+
+// SetProducerBatchLimit sets the maximum number of data batches a producer
+// emits per HTTP response. When the limit is reached, the server serializes
+// the producer state into a continuation token appended to the response.
+// The client sends the token back via /exchange to resume production.
+// Set to 0 (default) for unlimited batches per response.
+func (h *HttpServer) SetProducerBatchLimit(limit int) {
+	h.producerBatchLimit = limit
 }
 
 // ServeHTTP implements http.Handler.
@@ -531,7 +555,7 @@ func (h *HttpServer) handleStreamInit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if isProducer {
-		// Run produce loop to completion
+		// Run produce loop (may be limited by producerBatchLimit)
 		writer := ipc.NewWriter(&buf, ipc.WithSchema(outputSchema))
 
 		// Write any buffered init logs
@@ -540,7 +564,24 @@ func (h *HttpServer) handleStreamInit(w http.ResponseWriter, r *http.Request) {
 			_ = writeLogBatch(writer, outputSchema, logMsg, h.server.serverID, "")
 		}
 
-		handlerErr = h.runProduceLoop(ctx, writer, outputSchema, state.(ProducerState), info, stats)
+		finished, err := h.runProduceLoop(ctx, writer, outputSchema, state.(ProducerState), info, stats)
+		handlerErr = err
+		if err == nil && !finished {
+			// Batch limit reached — append continuation token
+			token, tokenErr := h.packStateToken(state, outputSchema)
+			if tokenErr != nil {
+				handlerErr = tokenErr
+			} else {
+				stateMeta := arrow.NewMetadata(
+					[]string{MetaStreamState}, []string{string(token)})
+				zeroBatch := emptyBatch(outputSchema)
+				batchWithMeta := array.NewRecordBatchWithMetadata(
+					outputSchema, zeroBatch.Columns(), zeroBatch.NumRows(), stateMeta)
+				_ = writer.Write(batchWithMeta)
+				batchWithMeta.Release()
+				zeroBatch.Release()
+			}
+		}
 		_ = writer.Close()
 	} else {
 		// Exchange init — return state token (carry schema for dynamic methods)
@@ -632,6 +673,15 @@ func (h *HttpServer) handleStreamExchange(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Rehydrate non-serializable fields if a callback is registered
+	if h.rehydrateFunc != nil {
+		if err := h.rehydrateFunc(tokenData.State, method); err != nil {
+			h.writeHttpError(w, http.StatusInternalServerError,
+				&RpcError{Type: "RuntimeError", Message: fmt.Sprintf("state rehydration failed: %v", err)}, nil)
+			return
+		}
+	}
+
 	var handlerErr error
 	stats := &CallStatistics{}
 
@@ -687,10 +737,26 @@ func (h *HttpServer) handleProducerContinuation(ctx context.Context, w http.Resp
 
 	var buf bytes.Buffer
 	writer := ipc.NewWriter(&buf, ipc.WithSchema(schema))
-	handlerErr := h.runProduceLoop(ctx, writer, schema, state, info, stats)
+	finished, err := h.runProduceLoop(ctx, writer, schema, state, info, stats)
+	if err == nil && !finished {
+		// Batch limit reached — append continuation token
+		token, tokenErr := h.packStateToken(state, schema)
+		if tokenErr != nil {
+			err = tokenErr
+		} else {
+			stateMeta := arrow.NewMetadata(
+				[]string{MetaStreamState}, []string{string(token)})
+			zeroBatch := emptyBatch(schema)
+			batchWithMeta := array.NewRecordBatchWithMetadata(
+				schema, zeroBatch.Columns(), zeroBatch.NumRows(), stateMeta)
+			_ = writer.Write(batchWithMeta)
+			batchWithMeta.Release()
+			zeroBatch.Release()
+		}
+	}
 	_ = writer.Close()
 	h.writeArrow(w, http.StatusOK, buf.Bytes())
-	return handlerErr
+	return err
 }
 
 // handleExchangeCall processes one exchange and returns the result with updated token.
@@ -776,14 +842,17 @@ func (h *HttpServer) handleExchangeCall(ctx context.Context, w http.ResponseWrit
 	return nil
 }
 
-// runProduceLoop runs the producer state machine to completion.
-// Returns the handler error (if any) for hook reporting.
+// runProduceLoop runs the producer state machine until completion or the batch
+// limit is reached. Returns (true, nil) when the producer has finished,
+// (false, nil) when the batch limit was reached (caller should emit a
+// continuation token), or (false, err) on error.
 func (h *HttpServer) runProduceLoop(ctx context.Context, writer *ipc.Writer, schema *arrow.Schema,
-	state ProducerState, info *methodInfo, stats *CallStatistics) error {
+	state ProducerState, info *methodInfo, stats *CallStatistics) (bool, error) {
 
+	dataBatches := 0
 	for {
 		if err := ctx.Err(); err != nil {
-			return nil
+			return true, nil
 		}
 		out := newOutputCollector(schema, h.server.serverID, true)
 		callCtx := &CallContext{
@@ -807,13 +876,13 @@ func (h *HttpServer) runProduceLoop(ctx context.Context, writer *ipc.Writer, sch
 
 		if produceErr != nil {
 			_ = writeErrorBatch(writer, schema, produceErr, h.server.serverID, "", h.server.debugErrors)
-			return produceErr
+			return false, produceErr
 		}
 
 		if !out.Finished() {
 			if err := out.validate(); err != nil {
 				_ = writeErrorBatch(writer, schema, err, h.server.serverID, "", h.server.debugErrors)
-				return err
+				return false, err
 			}
 		}
 
@@ -828,12 +897,18 @@ func (h *HttpServer) runProduceLoop(ctx context.Context, writer *ipc.Writer, sch
 				// Data batch — record output stats
 				stats.RecordOutput(ab.batch.NumRows(), batchBufferSize(ab.batch))
 				_ = writer.Write(ab.batch)
+				dataBatches++
 			}
 			ab.batch.Release()
 		}
 
 		if out.Finished() {
-			return nil
+			return true, nil
+		}
+
+		// Check batch limit
+		if h.producerBatchLimit > 0 && dataBatches >= h.producerBatchLimit {
+			return false, nil
 		}
 	}
 }

@@ -50,12 +50,12 @@ type StreamResult struct {
 // of log batches). Batches are stored in order because interleaving order
 // matters for the wire protocol (logs must precede the data batch they annotate).
 type OutputCollector struct {
-	schema        *arrow.Schema
-	batches       []annotatedBatch
-	dataBatchIdx  int // -1 if no data batch yet
-	finished      bool
-	producerMode  bool
-	serverID      string
+	schema       *arrow.Schema
+	batches      []annotatedBatch
+	dataBatchIdx int // -1 if no data batch yet
+	finished     bool
+	producerMode bool
+	serverID     string
 
 	// EmitInterceptor, if non-nil, is called on every data batch before it is
 	// stored. The returned batch replaces the original. This is used by the VGI
@@ -256,4 +256,3 @@ func buildArrayFromSlice(mem memory.Allocator, dt arrow.DataType, vals []interfa
 		return b.NewArray()
 	}
 }
-

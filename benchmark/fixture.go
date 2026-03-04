@@ -9,8 +9,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/Query-farm/vgi-rpc/vgirpc"
+	"github.com/apache/arrow-go/v18/arrow"
 )
 
 // Parameter structs
