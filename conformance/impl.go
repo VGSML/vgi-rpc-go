@@ -9,6 +9,7 @@ import (
 	"strconv"
 
 	"github.com/Query-farm/vgi-rpc/vgirpc"
+	"github.com/apache/arrow-go/v18/arrow"
 )
 
 // --- Parameter structs for each method ---
@@ -160,6 +161,10 @@ func RegisterMethods(server *vgirpc.Server) {
 	vgirpc.Exchange(server, "exchange_error_on_nth", scaleOutputSchema, scaleInputSchema, exchangeErrorOnNth)
 	vgirpc.Exchange(server, "exchange_error_on_init", scaleOutputSchema, scaleInputSchema, exchangeErrorOnInit)
 
+	// Zero-column exchange
+	emptySchema := arrow.NewSchema([]arrow.Field{}, nil)
+	vgirpc.Exchange(server, "exchange_zero_columns", emptySchema, emptySchema, exchangeZeroColumns)
+
 	// Exchange streams with headers
 	vgirpc.ExchangeWithHeader(server, "exchange_with_header", scaleOutputSchema, scaleInputSchema, headerSchema, exchangeWithHeader)
 
@@ -206,6 +211,7 @@ type exchangeErrorOnNthParams struct {
 	FailOn int64 `vgirpc:"fail_on"`
 }
 type exchangeErrorOnInitParams struct{}
+type exchangeZeroColumnsParams struct{}
 type exchangeWithHeaderParams struct {
 	Factor float64 `vgirpc:"factor"`
 }
@@ -470,6 +476,15 @@ func exchangeErrorOnNth(_ context.Context, ctx *vgirpc.CallContext, p exchangeEr
 
 func exchangeErrorOnInit(_ context.Context, ctx *vgirpc.CallContext, _ exchangeErrorOnInitParams) (*vgirpc.StreamResult, error) {
 	return nil, &vgirpc.RpcError{Type: "RuntimeError", Message: "intentional exchange init error"}
+}
+
+func exchangeZeroColumns(_ context.Context, ctx *vgirpc.CallContext, _ exchangeZeroColumnsParams) (*vgirpc.StreamResult, error) {
+	emptySchema := arrow.NewSchema([]arrow.Field{}, nil)
+	return &vgirpc.StreamResult{
+		OutputSchema: emptySchema,
+		InputSchema:  emptySchema,
+		State:        &zeroColumnExchangeState{},
+	}, nil
 }
 
 func exchangeWithHeader(_ context.Context, ctx *vgirpc.CallContext, p exchangeWithHeaderParams) (*vgirpc.StreamResult, error) {

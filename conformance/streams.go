@@ -7,10 +7,10 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/Query-farm/vgi-rpc/vgirpc"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
-	"github.com/Query-farm/vgi-rpc/vgirpc"
 )
 
 func init() {
@@ -27,6 +27,7 @@ func init() {
 	vgirpc.RegisterStateType(&loggingExchangeState{})
 	vgirpc.RegisterStateType(&failOnExchangeNState{})
 	vgirpc.RegisterStateType(&dynamicProducerState{})
+	vgirpc.RegisterStateType(&zeroColumnExchangeState{})
 }
 
 // --- Producer States ---
@@ -284,6 +285,16 @@ func (s *failOnExchangeNState) Exchange(_ context.Context, input arrow.RecordBat
 		return &vgirpc.RpcError{Type: "RuntimeError", Message: fmt.Sprintf("intentional error on exchange %d", s.ExchangeCount)}
 	}
 	return out.Emit(input)
+}
+
+// zeroColumnExchangeState accepts zero-column batches and emits zero-column batches.
+type zeroColumnExchangeState struct {
+	CallCount int
+}
+
+func (s *zeroColumnExchangeState) Exchange(_ context.Context, input arrow.RecordBatch, out *vgirpc.OutputCollector, callCtx *vgirpc.CallContext) error {
+	s.CallCount++
+	return out.EmitArrays([]arrow.Array{}, 0)
 }
 
 // --- Helper ---
