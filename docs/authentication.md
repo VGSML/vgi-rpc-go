@@ -157,12 +157,136 @@ staticAuth := vgirpc.BearerAuthenticateStatic(map[string]*vgirpc.AuthContext{
 httpServer.SetAuthenticate(vgirpc.ChainAuthenticate(jwtAuth, staticAuth))
 ```
 
+### Mutual TLS (mTLS) Authentication
+
+vgi-rpc-go supports mTLS authentication for services behind TLS-terminating proxies. The proxy verifies client certificates and forwards certificate information as HTTP headers. vgi-rpc provides factories that extract identity from these headers.
+
+> **Warning:** The reverse proxy **MUST** strip client-supplied `X-SSL-Client-Cert` / `x-forwarded-client-cert` headers before forwarding. Failure to do so allows clients to forge certificate identity. These factories trust the header unconditionally — certificate chain validation is the proxy's responsibility.
+
+Two header conventions are supported:
+
+| Convention | Proxies | Header | Go deps |
+|---|---|---|---|
+| **PEM-in-header** | nginx, AWS ALB, Cloudflare | `X-SSL-Client-Cert` (configurable) | stdlib only |
+| **XFCC** | Envoy | `x-forwarded-client-cert` | stdlib only |
+
+#### MtlsAuthenticate
+
+Generic factory with full control over certificate validation. Parses a URL-encoded PEM certificate from a proxy header and delegates to a user-supplied `Validate` callback:
+
+```go
+httpServer.SetAuthenticate(vgirpc.MtlsAuthenticate(vgirpc.MtlsAuthenticateConfig{
+    Validate: func(cert *x509.Certificate) (*vgirpc.AuthContext, error) {
+        cn := cert.Subject.CommonName
+        if cn == "" {
+            return nil, &vgirpc.RpcError{Type: "ValueError", Message: "missing CN"}
+        }
+        return &vgirpc.AuthContext{
+            Domain:        "mtls",
+            Authenticated: true,
+            Principal:     cn,
+            Claims:        map[string]any{"serial": fmt.Sprintf("%x", cert.SerialNumber)},
+        }, nil
+    },
+    // Header: "X-SSL-Client-Cert",  // default
+    // CheckExpiry: false,            // default
+}))
+```
+
+Common header names by proxy:
+
+| Proxy | Header |
+|---|---|
+| nginx | `X-SSL-Client-Cert` (default) |
+| AWS ALB | `X-Amzn-Mtls-Clientcert` |
+| Cloudflare | `X-SSL-Client-Cert` |
+
+#### MtlsAuthenticateFingerprint
+
+Convenience factory that looks up certificates by SHA-256 fingerprint (lowercase hex, no colons):
+
+```go
+httpServer.SetAuthenticate(vgirpc.MtlsAuthenticateFingerprint(vgirpc.MtlsAuthenticateFingerprintConfig{
+    Fingerprints: map[string]*vgirpc.AuthContext{
+        "a1b2c3d4...": {Domain: "mtls", Authenticated: true, Principal: "service-a"},
+        "f6e5d4c3...": {Domain: "mtls", Authenticated: true, Principal: "service-b"},
+    },
+    // Algorithm: "sha256",  // default; also "sha1", "sha384", "sha512"
+}))
+```
+
+Get a fingerprint with: `openssl x509 -fingerprint -sha256 -noout -in cert.pem | sed 's/.*=//; s/://g' | tr '[:upper:]' '[:lower:]'`
+
+#### MtlsAuthenticateSubject
+
+Extracts the Subject Common Name as principal and populates claims with certificate metadata:
+
+```go
+httpServer.SetAuthenticate(vgirpc.MtlsAuthenticateSubject(vgirpc.MtlsAuthenticateSubjectConfig{
+    AllowedSubjects: map[string]struct{}{
+        "frontend":    {},
+        "batch-worker": {},
+    },
+    CheckExpiry: true,
+}))
+```
+
+The returned `AuthContext.Claims` contains:
+
+| Claim | Description |
+|---|---|
+| `subject_dn` | Full Distinguished Name (Go `pkix.Name.String()` format) |
+| `serial` | Certificate serial number (hex) |
+| `not_valid_after` | Expiry timestamp (RFC 3339) |
+
+#### MtlsAuthenticateXfcc
+
+Parses the Envoy `x-forwarded-client-cert` header. No certificate parsing needed — identity is extracted from the structured text header:
+
+```go
+// Default: extract CN from Subject field
+httpServer.SetAuthenticate(vgirpc.MtlsAuthenticateXfcc(vgirpc.MtlsAuthenticateXfccConfig{}))
+
+// Custom validation (e.g. SPIFFE ID)
+httpServer.SetAuthenticate(vgirpc.MtlsAuthenticateXfcc(vgirpc.MtlsAuthenticateXfccConfig{
+    Validate: func(elem vgirpc.XfccElement) (*vgirpc.AuthContext, error) {
+        if elem.URI == "" || !strings.HasPrefix(elem.URI, "spiffe://") {
+            return nil, &vgirpc.RpcError{Type: "ValueError", Message: "Missing SPIFFE ID"}
+        }
+        return &vgirpc.AuthContext{
+            Domain:        "spiffe",
+            Authenticated: true,
+            Principal:     elem.URI,
+        }, nil
+    },
+    SelectElement: "first", // "first" (original client) or "last" (nearest proxy)
+}))
+```
+
+#### Combining mTLS with other authenticators
+
+Use `ChainAuthenticate` to accept mTLS or bearer tokens:
+
+```go
+mtlsAuth := vgirpc.MtlsAuthenticateSubject(vgirpc.MtlsAuthenticateSubjectConfig{
+    AllowedSubjects: map[string]struct{}{"backend-svc": {}},
+})
+apiKeyAuth := vgirpc.BearerAuthenticateStatic(map[string]*vgirpc.AuthContext{
+    "sk-ci-bot": {Domain: "apikey", Authenticated: true, Principal: "ci-bot"},
+})
+httpServer.SetAuthenticate(vgirpc.ChainAuthenticate(mtlsAuth, apiKeyAuth))
+```
+
 ### Summary of auth factories
 
 | Factory | Package | Description |
 |---|---|---|
 | `BearerAuthenticate` | `vgirpc` | Bearer token with custom validation |
 | `BearerAuthenticateStatic` | `vgirpc` | Bearer token with fixed token map |
+| `MtlsAuthenticate` | `vgirpc` | PEM certificate with custom validation |
+| `MtlsAuthenticateFingerprint` | `vgirpc` | PEM certificate fingerprint lookup |
+| `MtlsAuthenticateSubject` | `vgirpc` | PEM certificate subject CN extraction |
+| `MtlsAuthenticateXfcc` | `vgirpc` | Envoy XFCC header parsing |
 | `ChainAuthenticate` | `vgirpc` | Try multiple authenticators in order |
 | `jwtauth.NewAuthenticateFunc` | `vgirpc/jwtauth` | JWT validation via JWKS |
 
