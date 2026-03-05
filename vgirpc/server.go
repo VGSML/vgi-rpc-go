@@ -389,6 +389,7 @@ func (s *Server) serveOne(ctx context.Context, r io.Reader, w io.Writer) error {
 		ServerID:          s.serverID,
 		RequestID:         req.RequestID,
 		TransportMetadata: req.Metadata,
+		Auth:              Anonymous(),
 	}
 
 	var hookToken HookToken
@@ -456,11 +457,13 @@ func (s *Server) serveUnary(ctx context.Context, w io.Writer, req *Request, info
 
 	// Build call context
 	callCtx := &CallContext{
-		Ctx:       ctx,
-		RequestID: req.RequestID,
-		ServerID:  s.serverID,
-		Method:    req.Method,
-		LogLevel:  LogLevel(req.LogLevel),
+		Ctx:               ctx,
+		RequestID:         req.RequestID,
+		ServerID:          s.serverID,
+		Method:            req.Method,
+		LogLevel:          LogLevel(req.LogLevel),
+		Auth:              Anonymous(),
+		TransportMetadata: req.Metadata,
 	}
 	if callCtx.LogLevel == "" {
 		callCtx.LogLevel = LogTrace // default: allow all, client filters
@@ -550,11 +553,13 @@ func (s *Server) serveStream(ctx context.Context, r io.Reader, w io.Writer, req 
 
 	// Build call context for init
 	callCtx := &CallContext{
-		Ctx:       ctx,
-		RequestID: req.RequestID,
-		ServerID:  s.serverID,
-		Method:    req.Method,
-		LogLevel:  LogLevel(req.LogLevel),
+		Ctx:               ctx,
+		RequestID:         req.RequestID,
+		ServerID:          s.serverID,
+		Method:            req.Method,
+		LogLevel:          LogLevel(req.LogLevel),
+		Auth:              Anonymous(),
+		TransportMetadata: req.Metadata,
 	}
 	if callCtx.LogLevel == "" {
 		callCtx.LogLevel = LogTrace
@@ -742,11 +747,13 @@ func (s *Server) serveStream(ctx context.Context, r io.Reader, w io.Writer, req 
 
 		// Build per-iteration call context
 		iterCtx := &CallContext{
-			Ctx:       ctx,
-			RequestID: req.RequestID,
-			ServerID:  s.serverID,
-			Method:    req.Method,
-			LogLevel:  LogLevel(req.LogLevel),
+			Ctx:               ctx,
+			RequestID:         req.RequestID,
+			ServerID:          s.serverID,
+			Method:            req.Method,
+			LogLevel:          LogLevel(req.LogLevel),
+			Auth:              Anonymous(),
+			TransportMetadata: req.Metadata,
 		}
 		if iterCtx.LogLevel == "" {
 			iterCtx.LogLevel = LogTrace

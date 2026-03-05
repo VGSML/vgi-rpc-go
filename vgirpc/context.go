@@ -21,7 +21,13 @@ type CallContext struct {
 	// LogLevel is the client-requested minimum log severity. Log messages
 	// below this level are silently discarded by [CallContext.ClientLog].
 	LogLevel LogLevel
-	logs     []LogMessage
+	// Auth is the authentication context for this request. It is never nil;
+	// unauthenticated requests receive [Anonymous].
+	Auth *AuthContext
+	// TransportMetadata holds transport-level key/value pairs such as
+	// remote_addr, user_agent, and IPC custom metadata.
+	TransportMetadata map[string]string
+	logs              []LogMessage
 }
 
 // ClientLog records a log message that will be sent to the client.

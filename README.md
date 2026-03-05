@@ -300,6 +300,39 @@ By default, `NewHttpServer` generates a random 32-byte signing key. For multi-in
 httpServer := vgirpc.NewHttpServerWithKey(server, sharedKey)
 ```
 
+### Authentication
+
+`HttpServer` supports optional request authentication via a callback:
+
+```go
+httpServer.SetAuthenticate(func(r *http.Request) (*vgirpc.AuthContext, error) {
+    token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+    if token == "" {
+        return nil, &vgirpc.RpcError{Type: "ValueError", Message: "Missing bearer token"}
+    }
+    // Validate token...
+    return &vgirpc.AuthContext{
+        Domain:        "bearer",
+        Authenticated: true,
+        Principal:     "user@example.com",
+        Claims:        map[string]any{"role": "admin"},
+    }, nil
+})
+```
+
+Inside handlers, access auth via `CallContext`:
+
+```go
+func handler(ctx context.Context, callCtx *vgirpc.CallContext, p MyParams) (string, error) {
+    if err := callCtx.Auth.RequireAuthenticated(); err != nil {
+        return "", err
+    }
+    return "Hello, " + callCtx.Auth.Principal, nil
+}
+```
+
+When no `SetAuthenticate` callback is registered, all requests receive `vgirpc.Anonymous()`. The stdio transport always uses `Anonymous()`. See [docs/authentication.md](docs/authentication.md) for full details.
+
 ## Error Handling
 
 ### RpcError

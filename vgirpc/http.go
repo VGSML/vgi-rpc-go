@@ -66,8 +66,9 @@ type HttpServer struct {
 	mux         *http.ServeMux
 	zstdEncoder *zstd.Encoder // non-nil when response compression is enabled
 
-	rehydrateFunc      RehydrateFunc // called after unpacking state tokens
-	producerBatchLimit int           // max data batches per producer response; 0 = unlimited
+	rehydrateFunc      RehydrateFunc    // called after unpacking state tokens
+	producerBatchLimit int              // max data batches per producer response; 0 = unlimited
+	authenticateFunc   AuthenticateFunc // optional auth callback; nil = anonymous
 
 	// Pre-rendered HTML pages (built by initPages)
 	landingHTML  []byte
@@ -243,6 +244,35 @@ func (h *HttpServer) SetProducerBatchLimit(limit int) {
 	h.producerBatchLimit = limit
 }
 
+// SetAuthenticate registers a callback that extracts authentication
+// information from each HTTP request. If the callback returns a non-nil
+// error, the request is rejected (see [AuthenticateFunc] for status code
+// mapping). When no callback is registered, all requests receive [Anonymous].
+func (h *HttpServer) SetAuthenticate(fn AuthenticateFunc) {
+	h.authenticateFunc = fn
+}
+
+// authenticate runs the registered AuthenticateFunc (if any) and writes
+// an error response on failure. Returns nil when auth fails (caller should
+// return immediately).
+func (h *HttpServer) authenticate(w http.ResponseWriter, r *http.Request) *AuthContext {
+	if h.authenticateFunc == nil {
+		return Anonymous()
+	}
+	auth, err := h.authenticateFunc(r)
+	if err != nil {
+		if rpcErr, ok := err.(*RpcError); ok &&
+			(rpcErr.Type == "ValueError" || rpcErr.Type == "PermissionError") {
+			http.Error(w, rpcErr.Message, http.StatusUnauthorized)
+		} else {
+			slog.Error("authenticate callback error", "err", err, "remote_addr", r.RemoteAddr)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+		}
+		return nil
+	}
+	return auth
+}
+
 // ServeHTTP implements http.Handler.
 func (h *HttpServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Auto-initialize pages on first request if not done explicitly.
@@ -294,6 +324,11 @@ func (cw *compressResponseWriter) finish() {
 
 // handleUnary dispatches a unary RPC call.
 func (h *HttpServer) handleUnary(w http.ResponseWriter, r *http.Request) {
+	auth := h.authenticate(w, r)
+	if auth == nil {
+		return
+	}
+
 	method := r.PathValue("method")
 
 	if ct := r.Header.Get("Content-Type"); ct != arrowContentType {
@@ -343,6 +378,7 @@ func (h *HttpServer) handleUnary(w http.ResponseWriter, r *http.Request) {
 		ServerID:          h.server.serverID,
 		RequestID:         req.RequestID,
 		TransportMetadata: transportMeta,
+		Auth:              auth,
 	}
 
 	ctx, hookCleanup := h.startDispatchHook(r.Context(), dispatchInfo, stats, &handlerErr)
@@ -359,11 +395,13 @@ func (h *HttpServer) handleUnary(w http.ResponseWriter, r *http.Request) {
 	stats.RecordInput(req.Batch.NumRows(), batchBufferSize(req.Batch))
 
 	callCtx := &CallContext{
-		Ctx:       ctx,
-		RequestID: req.RequestID,
-		ServerID:  h.server.serverID,
-		Method:    method,
-		LogLevel:  LogLevel(req.LogLevel),
+		Ctx:               ctx,
+		RequestID:         req.RequestID,
+		ServerID:          h.server.serverID,
+		Method:            method,
+		LogLevel:          LogLevel(req.LogLevel),
+		Auth:              auth,
+		TransportMetadata: transportMeta,
 	}
 	if callCtx.LogLevel == "" {
 		callCtx.LogLevel = LogTrace
@@ -435,6 +473,11 @@ func (h *HttpServer) handleUnary(w http.ResponseWriter, r *http.Request) {
 
 // handleStreamInit dispatches stream initialization.
 func (h *HttpServer) handleStreamInit(w http.ResponseWriter, r *http.Request) {
+	auth := h.authenticate(w, r)
+	if auth == nil {
+		return
+	}
+
 	method := r.PathValue("method")
 
 	if ct := r.Header.Get("Content-Type"); ct != arrowContentType {
@@ -479,6 +522,7 @@ func (h *HttpServer) handleStreamInit(w http.ResponseWriter, r *http.Request) {
 		ServerID:          h.server.serverID,
 		RequestID:         req.RequestID,
 		TransportMetadata: transportMeta,
+		Auth:              auth,
 	}
 
 	ctx, hookCleanup := h.startDispatchHook(r.Context(), dispatchInfo, stats, &handlerErr)
@@ -495,11 +539,13 @@ func (h *HttpServer) handleStreamInit(w http.ResponseWriter, r *http.Request) {
 	stats.RecordInput(req.Batch.NumRows(), batchBufferSize(req.Batch))
 
 	callCtx := &CallContext{
-		Ctx:       ctx,
-		RequestID: req.RequestID,
-		ServerID:  h.server.serverID,
-		Method:    method,
-		LogLevel:  LogLevel(req.LogLevel),
+		Ctx:               ctx,
+		RequestID:         req.RequestID,
+		ServerID:          h.server.serverID,
+		Method:            method,
+		LogLevel:          LogLevel(req.LogLevel),
+		Auth:              auth,
+		TransportMetadata: transportMeta,
 	}
 	if callCtx.LogLevel == "" {
 		callCtx.LogLevel = LogTrace
@@ -564,7 +610,7 @@ func (h *HttpServer) handleStreamInit(w http.ResponseWriter, r *http.Request) {
 			_ = writeLogBatch(writer, outputSchema, logMsg, h.server.serverID, "")
 		}
 
-		finished, err := h.runProduceLoop(ctx, writer, outputSchema, state.(ProducerState), info, stats)
+		finished, err := h.runProduceLoop(ctx, writer, outputSchema, state.(ProducerState), info, stats, auth, transportMeta)
 		handlerErr = err
 		if err == nil && !finished {
 			// Batch limit reached — append continuation token
@@ -616,6 +662,11 @@ func (h *HttpServer) handleStreamInit(w http.ResponseWriter, r *http.Request) {
 
 // handleStreamExchange dispatches stream exchange or producer continuation.
 func (h *HttpServer) handleStreamExchange(w http.ResponseWriter, r *http.Request) {
+	auth := h.authenticate(w, r)
+	if auth == nil {
+		return
+	}
+
 	method := r.PathValue("method")
 
 	if ct := r.Header.Get("Content-Type"); ct != arrowContentType {
@@ -702,6 +753,7 @@ func (h *HttpServer) handleStreamExchange(w http.ResponseWriter, r *http.Request
 		MethodType:        DispatchMethodStream,
 		ServerID:          h.server.serverID,
 		TransportMetadata: transportMeta,
+		Auth:              auth,
 	}
 
 	ctx, hookCleanup := h.startDispatchHook(r.Context(), dispatchInfo, stats, &handlerErr)
@@ -735,20 +787,20 @@ func (h *HttpServer) handleStreamExchange(w http.ResponseWriter, r *http.Request
 	}
 
 	if isProducer {
-		handlerErr = h.handleProducerContinuation(ctx, w, outputSchema, tokenData.State.(ProducerState), info, stats)
+		handlerErr = h.handleProducerContinuation(ctx, w, outputSchema, tokenData.State.(ProducerState), info, stats, auth, transportMeta)
 	} else {
-		handlerErr = h.handleExchangeCall(ctx, w, inputBatch, outputSchema, tokenData.State.(ExchangeState), info, stats)
+		handlerErr = h.handleExchangeCall(ctx, w, inputBatch, outputSchema, tokenData.State.(ExchangeState), info, stats, auth, transportMeta)
 	}
 }
 
 // handleProducerContinuation runs the produce loop for a continuation request.
 // Returns the handler error (if any) for hook reporting.
 func (h *HttpServer) handleProducerContinuation(ctx context.Context, w http.ResponseWriter, schema *arrow.Schema,
-	state ProducerState, info *methodInfo, stats *CallStatistics) error {
+	state ProducerState, info *methodInfo, stats *CallStatistics, auth *AuthContext, transportMeta map[string]string) error {
 
 	var buf bytes.Buffer
 	writer := ipc.NewWriter(&buf, ipc.WithSchema(schema))
-	finished, err := h.runProduceLoop(ctx, writer, schema, state, info, stats)
+	finished, err := h.runProduceLoop(ctx, writer, schema, state, info, stats, auth, transportMeta)
 	if err == nil && !finished {
 		// Batch limit reached — append continuation token
 		token, tokenErr := h.packStateToken(state, schema)
@@ -773,17 +825,19 @@ func (h *HttpServer) handleProducerContinuation(ctx context.Context, w http.Resp
 // handleExchangeCall processes one exchange and returns the result with updated token.
 // Returns the handler error (if any) for hook reporting.
 func (h *HttpServer) handleExchangeCall(ctx context.Context, w http.ResponseWriter, inputBatch arrow.RecordBatch,
-	schema *arrow.Schema, state ExchangeState, info *methodInfo, stats *CallStatistics) error {
+	schema *arrow.Schema, state ExchangeState, info *methodInfo, stats *CallStatistics, auth *AuthContext, transportMeta map[string]string) error {
 
 	// Record input stats
 	stats.RecordInput(inputBatch.NumRows(), batchBufferSize(inputBatch))
 
 	out := newOutputCollector(schema, h.server.serverID, false)
 	callCtx := &CallContext{
-		Ctx:      ctx,
-		ServerID: h.server.serverID,
-		Method:   info.Name,
-		LogLevel: LogTrace,
+		Ctx:               ctx,
+		ServerID:          h.server.serverID,
+		Method:            info.Name,
+		LogLevel:          LogTrace,
+		Auth:              auth,
+		TransportMetadata: transportMeta,
 	}
 
 	var exchangeErr error
@@ -858,7 +912,7 @@ func (h *HttpServer) handleExchangeCall(ctx context.Context, w http.ResponseWrit
 // (false, nil) when the batch limit was reached (caller should emit a
 // continuation token), or (false, err) on error.
 func (h *HttpServer) runProduceLoop(ctx context.Context, writer *ipc.Writer, schema *arrow.Schema,
-	state ProducerState, info *methodInfo, stats *CallStatistics) (bool, error) {
+	state ProducerState, info *methodInfo, stats *CallStatistics, auth *AuthContext, transportMeta map[string]string) (bool, error) {
 
 	dataBatches := 0
 	for {
@@ -867,10 +921,12 @@ func (h *HttpServer) runProduceLoop(ctx context.Context, writer *ipc.Writer, sch
 		}
 		out := newOutputCollector(schema, h.server.serverID, true)
 		callCtx := &CallContext{
-			Ctx:      ctx,
-			ServerID: h.server.serverID,
-			Method:   info.Name,
-			LogLevel: LogTrace,
+			Ctx:               ctx,
+			ServerID:          h.server.serverID,
+			Method:            info.Name,
+			LogLevel:          LogTrace,
+			Auth:              auth,
+			TransportMetadata: transportMeta,
 		}
 
 		var produceErr error

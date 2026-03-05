@@ -33,6 +33,7 @@ type DispatchInfo struct {
 	ServerID          string            // Server identifier
 	RequestID         string            // Client-supplied request identifier
 	TransportMetadata map[string]string // Transport-level metadata (IPC custom metadata or HTTP headers)
+	Auth              *AuthContext      // Auth context for this dispatch; never nil
 }
 
 // CallStatistics holds per-call I/O counters matching the Python CallStatistics.
