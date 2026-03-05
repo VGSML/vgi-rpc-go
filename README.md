@@ -331,7 +331,7 @@ func handler(ctx context.Context, callCtx *vgirpc.CallContext, p MyParams) (stri
 }
 ```
 
-When no `SetAuthenticate` callback is registered, all requests receive `vgirpc.Anonymous()`. The stdio transport always uses `Anonymous()`. See [docs/authentication.md](docs/authentication.md) for full details.
+Built-in auth factories: `BearerAuthenticate`, `BearerAuthenticateStatic`, `ChainAuthenticate`, and JWT via the `vgirpc/jwtauth` package. When no `SetAuthenticate` callback is registered, all requests receive `vgirpc.Anonymous()`. The stdio transport always uses `Anonymous()`. See [docs/authentication.md](docs/authentication.md) for full details.
 
 ## Error Handling
 

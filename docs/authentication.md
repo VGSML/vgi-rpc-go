@@ -111,6 +111,61 @@ Authentication is performed once per HTTP request, not per streaming tick/exchan
 
 Auth state is **not** serialized into state tokens. Each HTTP request authenticates independently, which means exchange continuations re-authenticate on every round-trip.
 
+## Built-in auth helpers
+
+The `vgirpc` package provides several ready-made `AuthenticateFunc` factories that cover common authentication patterns.
+
+### Bearer Token Authentication
+
+`BearerAuthenticate` extracts a `Bearer` token from the `Authorization` header and passes it to a user-supplied validation function:
+
+```go
+httpServer.SetAuthenticate(vgirpc.BearerAuthenticate(func(token string) (*vgirpc.AuthContext, error) {
+    user, err := myTokenDB.Lookup(token)
+    if err != nil {
+        return nil, &vgirpc.RpcError{Type: "PermissionError", Message: "invalid token"}
+    }
+    return &vgirpc.AuthContext{
+        Domain:        "bearer",
+        Authenticated: true,
+        Principal:     user.Email,
+    }, nil
+}))
+```
+
+`BearerAuthenticateStatic` is a convenience wrapper for a fixed set of tokens:
+
+```go
+httpServer.SetAuthenticate(vgirpc.BearerAuthenticateStatic(map[string]*vgirpc.AuthContext{
+    "secret-token-1": {Domain: "bearer", Authenticated: true, Principal: "alice"},
+    "secret-token-2": {Domain: "bearer", Authenticated: true, Principal: "bob"},
+}))
+```
+
+### Chain Authenticate
+
+`ChainAuthenticate` tries multiple authenticators in order. A `ValueError` from one authenticator falls through to the next; a `PermissionError` or non-RPC error propagates immediately:
+
+```go
+jwtAuth, cleanup, _ := jwtauth.NewAuthenticateFunc(jwtauth.JWTAuthConfig{...})
+defer cleanup()
+
+staticAuth := vgirpc.BearerAuthenticateStatic(map[string]*vgirpc.AuthContext{
+    "dev-token": {Domain: "bearer", Authenticated: true, Principal: "developer"},
+})
+
+httpServer.SetAuthenticate(vgirpc.ChainAuthenticate(jwtAuth, staticAuth))
+```
+
+### Summary of auth factories
+
+| Factory | Package | Description |
+|---|---|---|
+| `BearerAuthenticate` | `vgirpc` | Bearer token with custom validation |
+| `BearerAuthenticateStatic` | `vgirpc` | Bearer token with fixed token map |
+| `ChainAuthenticate` | `vgirpc` | Try multiple authenticators in order |
+| `jwtauth.NewAuthenticateFunc` | `vgirpc/jwtauth` | JWT validation via JWKS |
+
 ## Stdio transport
 
 The stdio transport (`server.RunStdio()` / `server.Serve()`) always sets `CallContext.Auth` to `Anonymous()`. Authentication over stdio is not supported since there is no HTTP request to inspect.
