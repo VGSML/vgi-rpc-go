@@ -287,7 +287,7 @@ func (h *HttpServer) SetOAuthResourceMetadata(m *OAuthResourceMetadata) {
 	}
 	h.oauthMetadata = m
 	h.oauthMetadataJSON = data
-	h.wwwAuthenticate = buildWWWAuthenticate(metaURL)
+	h.wwwAuthenticate = buildWWWAuthenticate(metaURL, m.ClientID, m.UseIDTokenAsBearer)
 }
 
 // authenticate runs the registered AuthenticateFunc (if any) and writes

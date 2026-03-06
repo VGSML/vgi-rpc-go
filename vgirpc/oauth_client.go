@@ -60,12 +60,30 @@ func FetchOAuthResourceMetadataFromURL(metadataURL string, client ...*http.Clien
 // ParseResourceMetadataURL extracts the resource_metadata URL from a
 // WWW-Authenticate header value. Returns an empty string if not found.
 func ParseResourceMetadataURL(wwwAuthenticate string) string {
-	const key = `resource_metadata="`
-	idx := strings.Index(wwwAuthenticate, key)
+	return parseQuotedParam(wwwAuthenticate, "resource_metadata")
+}
+
+// ParseClientID extracts the client_id from a WWW-Authenticate header value.
+// Returns an empty string if not found.
+func ParseClientID(wwwAuthenticate string) string {
+	return parseQuotedParam(wwwAuthenticate, "client_id")
+}
+
+// ParseUseIDTokenAsBearer extracts the use_id_token_as_bearer flag from a
+// WWW-Authenticate header value. Returns true when the value is "true".
+func ParseUseIDTokenAsBearer(wwwAuthenticate string) bool {
+	return parseQuotedParam(wwwAuthenticate, "use_id_token_as_bearer") == "true"
+}
+
+// parseQuotedParam extracts a quoted parameter value (key="value") from a
+// WWW-Authenticate header value. Returns an empty string if not found.
+func parseQuotedParam(header, param string) string {
+	key := param + `="`
+	idx := strings.Index(header, key)
 	if idx == -1 {
 		return ""
 	}
-	rest := wwwAuthenticate[idx+len(key):]
+	rest := header[idx+len(key):]
 	end := strings.Index(rest, `"`)
 	if end == -1 {
 		return ""

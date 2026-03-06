@@ -290,6 +290,58 @@ httpServer.SetAuthenticate(vgirpc.ChainAuthenticate(mtlsAuth, apiKeyAuth))
 | `ChainAuthenticate` | `vgirpc` | Try multiple authenticators in order |
 | `jwtauth.NewAuthenticateFunc` | `vgirpc/jwtauth` | JWT validation via JWKS |
 
+## OAuth Protected Resource Metadata (RFC 9728)
+
+vgi-rpc-go can expose [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728.html) OAuth Protected Resource Metadata, which tells clients how to authenticate with the service's authorization server.
+
+### Setting up metadata
+
+```go
+httpServer.SetOAuthResourceMetadata(&vgirpc.OAuthResourceMetadata{
+    Resource:             "https://api.example.com/vgi",
+    AuthorizationServers: []string{"https://auth.example.com"},
+    ScopesSupported:      []string{"read", "write"},
+    ClientID:             "my-app-client-id",
+    UseIDTokenAsBearer:   true,
+})
+```
+
+This configures two things:
+
+1. A well-known endpoint at `/.well-known/oauth-protected-resource/vgi` serving the metadata JSON.
+2. A `WWW-Authenticate` header on 401 responses:
+   ```
+   Bearer resource_metadata="https://api.example.com/.well-known/oauth-protected-resource/vgi", client_id="my-app-client-id"
+   ```
+
+### ClientID
+
+The `ClientID` field is a custom RFC 9728 extension that tells OAuth clients which `client_id` to use when authenticating with the authorization server. This is useful when the resource server knows the expected client application identity. When set, it is included both in the metadata JSON and in the `WWW-Authenticate` challenge header.
+
+The value must contain only URL-safe characters (`A-Z`, `a-z`, `0-9`, `-`, `.`, `_`, `~`). An empty string omits the field.
+
+### UseIDTokenAsBearer
+
+The `UseIDTokenAsBearer` field is a custom RFC 9728 extension that signals OAuth clients to use the OIDC `id_token` (instead of the `access_token`) as the Bearer token. When set to `true`, it is included both in the metadata JSON and in the `WWW-Authenticate` challenge header as `use_id_token_as_bearer="true"`.
+
+### Client helpers
+
+The `vgirpc` package provides helpers for clients to parse OAuth metadata:
+
+```go
+// Fetch metadata from a service's well-known endpoint
+meta, err := vgirpc.FetchOAuthResourceMetadata("https://api.example.com/vgi")
+
+// Extract resource_metadata URL from a 401 WWW-Authenticate header
+metaURL := vgirpc.ParseResourceMetadataURL(wwwAuth)
+
+// Extract client_id from a 401 WWW-Authenticate header
+clientID := vgirpc.ParseClientID(wwwAuth)
+
+// Check if the server wants clients to use the id_token as Bearer
+useIDToken := vgirpc.ParseUseIDTokenAsBearer(wwwAuth)
+```
+
 ## Stdio transport
 
 The stdio transport (`server.RunStdio()` / `server.Serve()`) always sets `CallContext.Auth` to `Anonymous()`. Authentication over stdio is not supported since there is no HTTP request to inspect.
