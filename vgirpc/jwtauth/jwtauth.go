@@ -21,8 +21,9 @@ import (
 type JWTAuthConfig struct {
 	// Issuer is the expected "iss" claim. Required.
 	Issuer string
-	// Audience is the expected "aud" claim. Required.
-	Audience string
+	// Audience is the list of accepted "aud" values. A token is valid if its
+	// audience claim contains ANY of these values. Required (at least one).
+	Audience []string
 	// JWKSURI is the JWKS endpoint URL. Required.
 	JWKSURI string
 	// PrincipalClaim is the JWT claim used as the principal identity.
@@ -40,7 +41,7 @@ func NewAuthenticateFunc(cfg JWTAuthConfig) (vgirpc.AuthenticateFunc, func(), er
 	if cfg.Issuer == "" {
 		return nil, nil, fmt.Errorf("jwtauth: issuer is required")
 	}
-	if cfg.Audience == "" {
+	if len(cfg.Audience) == 0 {
 		return nil, nil, fmt.Errorf("jwtauth: audience is required")
 	}
 	if cfg.PrincipalClaim == "" {
@@ -66,9 +67,10 @@ func NewAuthenticateFunc(cfg JWTAuthConfig) (vgirpc.AuthenticateFunc, func(), er
 		cancel()
 	}
 
+	acceptedAudiences := cfg.Audience
+
 	parserOpts := []jwt.ParserOption{
 		jwt.WithIssuer(cfg.Issuer),
-		jwt.WithAudience(cfg.Audience),
 		jwt.WithValidMethods([]string{"RS256", "RS384", "RS512", "ES256", "ES384", "ES512"}),
 	}
 
@@ -104,6 +106,15 @@ func NewAuthenticateFunc(cfg JWTAuthConfig) (vgirpc.AuthenticateFunc, func(), er
 			}
 		}
 
+		// Validate audience: token aud must contain at least one accepted audience
+		tokenAudiences, err := claims.GetAudience()
+		if err != nil || !audienceIntersects(tokenAudiences, acceptedAudiences) {
+			return nil, &vgirpc.RpcError{
+				Type:    "ValueError",
+				Message: "Invalid token: token audience does not match any accepted audience",
+			}
+		}
+
 		// Extract principal
 		principal := ""
 		if v, ok := claims[cfg.PrincipalClaim]; ok {
@@ -125,4 +136,16 @@ func NewAuthenticateFunc(cfg JWTAuthConfig) (vgirpc.AuthenticateFunc, func(), er
 	}
 
 	return authFunc, cleanup, nil
+}
+
+// audienceIntersects returns true if any element in tokenAud appears in accepted.
+func audienceIntersects(tokenAud, accepted []string) bool {
+	for _, ta := range tokenAud {
+		for _, aa := range accepted {
+			if ta == aa {
+				return true
+			}
+		}
+	}
+	return false
 }

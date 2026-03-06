@@ -62,7 +62,7 @@ func TestNewAuthenticateFunc_ValidJWT(t *testing.T) {
 
 	authFunc, cleanup, err := NewAuthenticateFunc(JWTAuthConfig{
 		Issuer:   "https://auth.example.com",
-		Audience: "https://api.example.com",
+		Audience: []string{"https://api.example.com"},
 		JWKSURI:  ts.URL,
 	})
 	if err != nil {
@@ -107,7 +107,7 @@ func TestNewAuthenticateFunc_ExpiredJWT(t *testing.T) {
 
 	authFunc, cleanup, err := NewAuthenticateFunc(JWTAuthConfig{
 		Issuer:   "https://auth.example.com",
-		Audience: "https://api.example.com",
+		Audience: []string{"https://api.example.com"},
 		JWKSURI:  ts.URL,
 	})
 	if err != nil {
@@ -140,7 +140,7 @@ func TestNewAuthenticateFunc_WrongAudience(t *testing.T) {
 
 	authFunc, cleanup, err := NewAuthenticateFunc(JWTAuthConfig{
 		Issuer:   "https://auth.example.com",
-		Audience: "https://api.example.com",
+		Audience: []string{"https://api.example.com"},
 		JWKSURI:  ts.URL,
 	})
 	if err != nil {
@@ -172,7 +172,7 @@ func TestNewAuthenticateFunc_WrongIssuer(t *testing.T) {
 
 	authFunc, cleanup, err := NewAuthenticateFunc(JWTAuthConfig{
 		Issuer:   "https://auth.example.com",
-		Audience: "https://api.example.com",
+		Audience: []string{"https://api.example.com"},
 		JWKSURI:  ts.URL,
 	})
 	if err != nil {
@@ -204,7 +204,7 @@ func TestNewAuthenticateFunc_MissingBearer(t *testing.T) {
 
 	authFunc, cleanup, err := NewAuthenticateFunc(JWTAuthConfig{
 		Issuer:   "https://auth.example.com",
-		Audience: "https://api.example.com",
+		Audience: []string{"https://api.example.com"},
 		JWKSURI:  ts.URL,
 	})
 	if err != nil {
@@ -227,7 +227,7 @@ func TestNewAuthenticateFunc_InvalidToken(t *testing.T) {
 
 	authFunc, cleanup, err := NewAuthenticateFunc(JWTAuthConfig{
 		Issuer:   "https://auth.example.com",
-		Audience: "https://api.example.com",
+		Audience: []string{"https://api.example.com"},
 		JWKSURI:  ts.URL,
 	})
 	if err != nil {
@@ -252,7 +252,7 @@ func TestNewAuthenticateFunc_CustomPrincipalClaim(t *testing.T) {
 
 	authFunc, cleanup, err := NewAuthenticateFunc(JWTAuthConfig{
 		Issuer:         "https://auth.example.com",
-		Audience:       "https://api.example.com",
+		Audience:       []string{"https://api.example.com"},
 		JWKSURI:        ts.URL,
 		PrincipalClaim: "email",
 	})

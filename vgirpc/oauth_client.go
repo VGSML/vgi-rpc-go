@@ -75,6 +75,24 @@ func ParseUseIDTokenAsBearer(wwwAuthenticate string) bool {
 	return parseQuotedParam(wwwAuthenticate, "use_id_token_as_bearer") == "true"
 }
 
+// ParseClientSecret extracts the client_secret from a WWW-Authenticate header
+// value. Returns an empty string if not found.
+func ParseClientSecret(wwwAuthenticate string) string {
+	return parseQuotedParam(wwwAuthenticate, "client_secret")
+}
+
+// ParseDeviceCodeClientID extracts the device_code_client_id from a
+// WWW-Authenticate header value. Returns an empty string if not found.
+func ParseDeviceCodeClientID(wwwAuthenticate string) string {
+	return parseQuotedParam(wwwAuthenticate, "device_code_client_id")
+}
+
+// ParseDeviceCodeClientSecret extracts the device_code_client_secret from a
+// WWW-Authenticate header value. Returns an empty string if not found.
+func ParseDeviceCodeClientSecret(wwwAuthenticate string) string {
+	return parseQuotedParam(wwwAuthenticate, "device_code_client_secret")
+}
+
 // parseQuotedParam extracts a quoted parameter value (key="value") from a
 // WWW-Authenticate header value. Returns an empty string if not found.
 func parseQuotedParam(header, param string) string {

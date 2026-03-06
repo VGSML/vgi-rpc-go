@@ -33,6 +33,18 @@ type OAuthResourceMetadata struct {
 	// clients to use the OIDC id_token (instead of the access_token) as the
 	// Bearer token.
 	UseIDTokenAsBearer bool `json:"use_id_token_as_bearer,omitempty"`
+
+	// ClientSecret is a custom RFC 9728 extension that provides the
+	// client_secret to use when authenticating with the authorization server.
+	ClientSecret string `json:"client_secret,omitempty"`
+
+	// DeviceCodeClientID is a custom RFC 9728 extension that provides a
+	// separate client_id for the device code flow.
+	DeviceCodeClientID string `json:"device_code_client_id,omitempty"`
+
+	// DeviceCodeClientSecret is a custom RFC 9728 extension that provides a
+	// separate client_secret for the device code flow.
+	DeviceCodeClientSecret string `json:"device_code_client_secret,omitempty"`
 }
 
 // Validate checks that required fields are present.
@@ -46,6 +58,15 @@ func (m *OAuthResourceMetadata) Validate() error {
 	if m.ClientID != "" && !clientIDPattern.MatchString(m.ClientID) {
 		return fmt.Errorf("oauth resource metadata: client_id contains invalid characters")
 	}
+	if m.ClientSecret != "" && !clientIDPattern.MatchString(m.ClientSecret) {
+		return fmt.Errorf("oauth resource metadata: client_secret contains invalid characters")
+	}
+	if m.DeviceCodeClientID != "" && !clientIDPattern.MatchString(m.DeviceCodeClientID) {
+		return fmt.Errorf("oauth resource metadata: device_code_client_id contains invalid characters")
+	}
+	if m.DeviceCodeClientSecret != "" && !clientIDPattern.MatchString(m.DeviceCodeClientSecret) {
+		return fmt.Errorf("oauth resource metadata: device_code_client_secret contains invalid characters")
+	}
 	return nil
 }
 
@@ -58,13 +79,22 @@ func wellKnownURL(prefix string) string {
 }
 
 // buildWWWAuthenticate builds a WWW-Authenticate header value per RFC 9728.
-func buildWWWAuthenticate(resourceMetadataURL, clientID string, useIDTokenAsBearer bool) string {
-	s := fmt.Sprintf(`Bearer resource_metadata="%s"`, resourceMetadataURL)
-	if clientID != "" {
-		s += fmt.Sprintf(`, client_id="%s"`, clientID)
+func buildWWWAuthenticate(metadataURL string, m *OAuthResourceMetadata) string {
+	s := fmt.Sprintf(`Bearer resource_metadata="%s"`, metadataURL)
+	if m.ClientID != "" {
+		s += fmt.Sprintf(`, client_id="%s"`, m.ClientID)
 	}
-	if useIDTokenAsBearer {
+	if m.UseIDTokenAsBearer {
 		s += `, use_id_token_as_bearer="true"`
+	}
+	if m.ClientSecret != "" {
+		s += fmt.Sprintf(`, client_secret="%s"`, m.ClientSecret)
+	}
+	if m.DeviceCodeClientID != "" {
+		s += fmt.Sprintf(`, device_code_client_id="%s"`, m.DeviceCodeClientID)
+	}
+	if m.DeviceCodeClientSecret != "" {
+		s += fmt.Sprintf(`, device_code_client_secret="%s"`, m.DeviceCodeClientSecret)
 	}
 	return s
 }

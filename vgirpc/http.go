@@ -176,7 +176,7 @@ func (h *HttpServer) handleOAuthWellKnown(w http.ResponseWriter, r *http.Request
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.Header().Set("Cache-Control", "public, max-age=60")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(h.oauthMetadataJSON)
 }
@@ -287,7 +287,7 @@ func (h *HttpServer) SetOAuthResourceMetadata(m *OAuthResourceMetadata) {
 	}
 	h.oauthMetadata = m
 	h.oauthMetadataJSON = data
-	h.wwwAuthenticate = buildWWWAuthenticate(metaURL, m.ClientID, m.UseIDTokenAsBearer)
+	h.wwwAuthenticate = buildWWWAuthenticate(metaURL, m)
 }
 
 // authenticate runs the registered AuthenticateFunc (if any) and writes
