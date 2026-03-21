@@ -47,13 +47,13 @@ func RegisterStateType(v interface{}) {
 }
 
 // HttpServer serves RPC requests over HTTP. It wraps a [Server] and exposes
-// URL routes under a configurable prefix (default "/vgi"):
+// URL routes under a configurable prefix (default ""):
 //
-//	POST /vgi/{method}           — unary RPC call
-//	POST /vgi/{method}/init      — stream initialization (producer or exchange)
-//	POST /vgi/{method}/exchange  — exchange continuation with state token
-//	GET  /vgi                    — landing page (HTML)
-//	GET  /vgi/describe           — API reference page (HTML)
+//	POST /{method}           — unary RPC call
+//	POST /{method}/init      — stream initialization (producer or exchange)
+//	POST /{method}/exchange  — exchange continuation with state token
+//	GET  /                   — landing page (HTML)
+//	GET  /describe           — API reference page (HTML)
 //
 // HttpServer implements [http.Handler] and can be used directly with
 // [http.ListenAndServe] or mounted on an existing [http.ServeMux].
@@ -99,7 +99,7 @@ func NewHttpServer(server *Server) *HttpServer {
 		signingKey:  key,
 		tokenTTL:    defaultTokenTTL,
 		maxBodySize: defaultMaxBodySize,
-		prefix:      "/vgi",
+		prefix:      "",
 
 		enableLandingPage:  true,
 		enableDescribePage: true,
@@ -120,7 +120,7 @@ func NewHttpServerWithKey(server *Server, signingKey []byte) *HttpServer {
 		signingKey:  signingKey,
 		tokenTTL:    defaultTokenTTL,
 		maxBodySize: defaultMaxBodySize,
-		prefix:      "/vgi",
+		prefix:      "",
 
 		enableLandingPage:  true,
 		enableDescribePage: true,
@@ -209,7 +209,11 @@ func (h *HttpServer) InitPages() {
 			describePath = h.prefix + "/describe"
 		}
 		h.landingHTML = buildLandingHTML(h.prefix, name, serverID, describePath, h.repoURL)
-		h.mux.HandleFunc(fmt.Sprintf("GET %s", h.prefix), h.handleLandingPage)
+		landingPattern := fmt.Sprintf("GET %s", h.prefix)
+		if h.prefix == "" {
+			landingPattern = "GET /{$}"
+		}
+		h.mux.HandleFunc(landingPattern, h.handleLandingPage)
 	}
 
 	if h.enableNotFoundPage {

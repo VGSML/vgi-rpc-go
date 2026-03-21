@@ -269,14 +269,14 @@ http.ListenAndServe(":8080", httpServer)
 
 ### URL routing
 
-All routes use the prefix `/vgi` (configurable):
+Routes use an empty prefix by default:
 
 | Route | Purpose |
 |---|---|
-| `POST /vgi/{method}` | Unary RPC call |
-| `POST /vgi/{method}/init` | Stream initialization |
-| `POST /vgi/{method}/exchange` | Exchange continuation |
-| `POST /vgi/__describe__` | Introspection |
+| `POST /{method}` | Unary RPC call |
+| `POST /{method}/init` | Stream initialization |
+| `POST /{method}/exchange` | Exchange continuation |
+| `POST /__describe__` | Introspection |
 
 All request and response bodies use `Content-Type: application/vnd.apache.arrow.stream`.
 

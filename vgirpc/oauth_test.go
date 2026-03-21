@@ -94,7 +94,7 @@ func TestWellKnownEndpoint(t *testing.T) {
 	})
 	h.InitPages()
 
-	req := httptest.NewRequest("GET", "/.well-known/oauth-protected-resource/vgi", nil)
+	req := httptest.NewRequest("GET", "/.well-known/oauth-protected-resource", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
@@ -104,7 +104,7 @@ func TestWellKnownEndpoint(t *testing.T) {
 	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
 		t.Errorf("expected application/json, got %s", ct)
 	}
-	if cc := w.Header().Get("Cache-Control"); cc != "public, max-age=3600" {
+	if cc := w.Header().Get("Cache-Control"); cc != "public, max-age=60" {
 		t.Errorf("expected Cache-Control header, got %s", cc)
 	}
 
@@ -121,7 +121,7 @@ func TestWellKnownEndpoint_NoMetadata(t *testing.T) {
 	h := newTestHttpServer(t)
 	h.InitPages()
 
-	req := httptest.NewRequest("GET", "/.well-known/oauth-protected-resource/vgi", nil)
+	req := httptest.NewRequest("GET", "/.well-known/oauth-protected-resource", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
@@ -141,7 +141,7 @@ func TestWellKnownEndpoint_BypassesAuth(t *testing.T) {
 	})
 	h.InitPages()
 
-	req := httptest.NewRequest("GET", "/.well-known/oauth-protected-resource/vgi", nil)
+	req := httptest.NewRequest("GET", "/.well-known/oauth-protected-resource", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
@@ -161,7 +161,7 @@ func TestWWWAuthenticateHeader(t *testing.T) {
 	})
 	h.InitPages()
 
-	req := httptest.NewRequest("POST", "/vgi/test_method", nil)
+	req := httptest.NewRequest("POST", "/test_method", nil)
 	req.Header.Set("Content-Type", "application/vnd.apache.arrow.stream")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -186,7 +186,7 @@ func TestWWWAuthenticateHeader_NoMetadata(t *testing.T) {
 	})
 	h.InitPages()
 
-	req := httptest.NewRequest("POST", "/vgi/test_method", nil)
+	req := httptest.NewRequest("POST", "/test_method", nil)
 	req.Header.Set("Content-Type", "application/vnd.apache.arrow.stream")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)

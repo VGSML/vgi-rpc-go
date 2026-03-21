@@ -54,11 +54,11 @@
 // # HTTP transport
 //
 // [HttpServer] wraps a [Server] and exposes it over HTTP with the
-// following URL routes (default prefix /vgi):
+// following URL routes (default prefix ""):
 //
-//	POST /vgi/{method}           — unary call
-//	POST /vgi/{method}/init      — stream initialization (producer or exchange)
-//	POST /vgi/{method}/exchange  — exchange continuation with state token
+//	POST /{method}           — unary call
+//	POST /{method}/init      — stream initialization (producer or exchange)
+//	POST /{method}/exchange  — exchange continuation with state token
 //
 // All request and response bodies use Content-Type
 // application/vnd.apache.arrow.stream. Stateful exchange streams carry an

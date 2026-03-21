@@ -33,7 +33,7 @@ The describe schema version is tracked by `vgirpc.DescribeVersion` (currently `"
 Over HTTP, the describe endpoint is available at:
 
 ```
-POST /vgi/__describe__
+POST /__describe__
 ```
 
 The request body should be an Arrow IPC stream with empty metadata (or the standard describe parameters).
