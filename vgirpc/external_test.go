@@ -1,0 +1,565 @@
+// © Copyright 2025-2026, Query.Farm LLC - https://query.farm
+// SPDX-License-Identifier: Apache-2.0
+
+package vgirpc
+
+import (
+	"bytes"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/ipc"
+	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/klauspost/compress/zstd"
+)
+
+var testSchema = arrow.NewSchema([]arrow.Field{
+	{Name: "value", Type: arrow.PrimitiveTypes.Int64},
+}, nil)
+
+// mockStorage is an in-memory ExternalStorage for testing.
+type mockStorage struct {
+	data                map[string][]byte
+	counter             int
+	lastContentEncoding string
+}
+
+func newMockStorage() *mockStorage {
+	return &mockStorage{data: make(map[string][]byte)}
+}
+
+func (m *mockStorage) Upload(data []byte, schema *arrow.Schema, contentEncoding string) (string, error) {
+	m.counter++
+	m.lastContentEncoding = contentEncoding
+	url := fmt.Sprintf("https://mock.storage/%d", m.counter)
+	m.data[url] = data
+	return url, nil
+}
+
+// makeBatch creates a test record batch with n int64 values.
+func makeBatch(n int) arrow.RecordBatch {
+	mem := memory.NewGoAllocator()
+	b := array.NewInt64Builder(mem)
+	defer b.Release()
+	for i := 0; i < n; i++ {
+		b.Append(int64(i))
+	}
+	col := b.NewArray()
+	defer col.Release()
+	return array.NewRecordBatch(testSchema, []arrow.Array{col}, int64(n))
+}
+
+// serializeTestIPC serializes a batch to IPC format bytes.
+func serializeTestIPC(batch arrow.RecordBatch) []byte {
+	var buf bytes.Buffer
+	w := ipc.NewWriter(&buf, ipc.WithSchema(batch.Schema()))
+	w.Write(batch)
+	w.Close()
+	return buf.Bytes()
+}
+
+// ===========================================================================
+// Detection tests
+// ===========================================================================
+
+func TestIsExternalLocationBatch_Positive(t *testing.T) {
+	batch, meta := MakeExternalLocationBatch(testSchema, "https://mock/test")
+	defer batch.Release()
+	if !IsExternalLocationBatch(batch, meta) {
+		t.Fatal("expected true for pointer batch")
+	}
+}
+
+func TestIsExternalLocationBatch_NonZeroRows(t *testing.T) {
+	batch := makeBatch(1)
+	defer batch.Release()
+	meta := arrow.NewMetadata([]string{MetaLocation}, []string{"https://mock/test"})
+	if IsExternalLocationBatch(batch, meta) {
+		t.Fatal("expected false for non-zero-row batch")
+	}
+}
+
+func TestIsExternalLocationBatch_NoMetadata(t *testing.T) {
+	batch, _ := MakeExternalLocationBatch(testSchema, "https://mock/test")
+	defer batch.Release()
+	if IsExternalLocationBatch(batch, arrow.Metadata{}) {
+		t.Fatal("expected false for empty metadata")
+	}
+}
+
+func TestIsExternalLocationBatch_LogBatch(t *testing.T) {
+	batch, _ := MakeExternalLocationBatch(testSchema, "https://mock/test")
+	defer batch.Release()
+	meta := arrow.NewMetadata(
+		[]string{MetaLocation, MetaLogLevel},
+		[]string{"https://mock/test", "INFO"},
+	)
+	if IsExternalLocationBatch(batch, meta) {
+		t.Fatal("expected false for log batch with location key")
+	}
+}
+
+func TestIsExternalLocationBatch_NoLocationKey(t *testing.T) {
+	batch, _ := MakeExternalLocationBatch(testSchema, "https://mock/test")
+	defer batch.Release()
+	meta := arrow.NewMetadata([]string{"other"}, []string{"value"})
+	if IsExternalLocationBatch(batch, meta) {
+		t.Fatal("expected false for batch without location key")
+	}
+}
+
+// ===========================================================================
+// Creation tests
+// ===========================================================================
+
+func TestMakeExternalLocationBatch_ZeroRows(t *testing.T) {
+	batch, _ := MakeExternalLocationBatch(testSchema, "https://mock/test")
+	defer batch.Release()
+	if batch.NumRows() != 0 {
+		t.Fatalf("expected 0 rows, got %d", batch.NumRows())
+	}
+}
+
+func TestMakeExternalLocationBatch_HasLocationMeta(t *testing.T) {
+	_, meta := MakeExternalLocationBatch(testSchema, "https://mock/test")
+	url, ok := metaGet(meta, MetaLocation)
+	if !ok {
+		t.Fatal("expected MetaLocation key")
+	}
+	if url != "https://mock/test" {
+		t.Fatalf("expected URL 'https://mock/test', got %q", url)
+	}
+}
+
+func TestMakeExternalLocationBatch_IsDetected(t *testing.T) {
+	batch, meta := MakeExternalLocationBatch(testSchema, "https://mock/test")
+	defer batch.Release()
+	if !IsExternalLocationBatch(batch, meta) {
+		t.Fatal("created batch not detected as pointer")
+	}
+}
+
+// ===========================================================================
+// Externalization (write path) tests
+// ===========================================================================
+
+func TestMaybeExternalizeBatch_AboveThreshold(t *testing.T) {
+	storage := newMockStorage()
+	config := &ExternalLocationConfig{
+		Storage:                   storage,
+		ExternalizeThresholdBytes: 10,
+	}
+	batch := makeBatch(100)
+	defer batch.Release()
+
+	extBatch, extMeta, err := MaybeExternalizeBatch(batch, arrow.Metadata{}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer extBatch.Release()
+
+	if extBatch.NumRows() != 0 {
+		t.Fatalf("expected pointer batch (0 rows), got %d", extBatch.NumRows())
+	}
+	_, ok := metaGet(extMeta, MetaLocation)
+	if !ok {
+		t.Fatal("expected MetaLocation key on pointer batch")
+	}
+	if len(storage.data) != 1 {
+		t.Fatalf("expected 1 upload, got %d", len(storage.data))
+	}
+}
+
+func TestMaybeExternalizeBatch_BelowThreshold(t *testing.T) {
+	storage := newMockStorage()
+	config := &ExternalLocationConfig{
+		Storage:                   storage,
+		ExternalizeThresholdBytes: 10_000_000,
+	}
+	batch := makeBatch(1)
+	defer batch.Release()
+
+	extBatch, _, err := MaybeExternalizeBatch(batch, arrow.Metadata{}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if extBatch.NumRows() != 1 {
+		t.Fatalf("expected original batch (1 row), got %d", extBatch.NumRows())
+	}
+	if len(storage.data) != 0 {
+		t.Fatalf("expected no uploads, got %d", len(storage.data))
+	}
+}
+
+func TestMaybeExternalizeBatch_NoStorage(t *testing.T) {
+	config := &ExternalLocationConfig{Storage: nil}
+	batch := makeBatch(100)
+	defer batch.Release()
+
+	extBatch, _, err := MaybeExternalizeBatch(batch, arrow.Metadata{}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if extBatch.NumRows() != 100 {
+		t.Fatalf("expected original batch, got %d rows", extBatch.NumRows())
+	}
+}
+
+func TestMaybeExternalizeBatch_ZeroRowPassthrough(t *testing.T) {
+	storage := newMockStorage()
+	config := &ExternalLocationConfig{
+		Storage:                   storage,
+		ExternalizeThresholdBytes: 0,
+	}
+	batch, _ := MakeExternalLocationBatch(testSchema, "https://existing")
+	defer batch.Release()
+
+	extBatch, _, err := MaybeExternalizeBatch(batch, arrow.Metadata{}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if extBatch.NumRows() != 0 {
+		t.Fatal("zero-row batch should pass through")
+	}
+	if len(storage.data) != 0 {
+		t.Fatal("zero-row batch should not be uploaded")
+	}
+}
+
+func TestMaybeExternalizeBatch_NilConfig(t *testing.T) {
+	batch := makeBatch(100)
+	defer batch.Release()
+
+	extBatch, _, err := MaybeExternalizeBatch(batch, arrow.Metadata{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if extBatch.NumRows() != 100 {
+		t.Fatal("nil config should pass through")
+	}
+}
+
+// ===========================================================================
+// Resolution (read path) tests
+// ===========================================================================
+
+func TestResolveExternalLocation_BasicResolution(t *testing.T) {
+	storage := newMockStorage()
+
+	dataBatch := makeBatch(1)
+	defer dataBatch.Release()
+	ipcBytes := serializeTestIPC(dataBatch)
+	url := "https://mock.storage/basic"
+	storage.data[url] = ipcBytes
+
+	// Create pointer batch (not used directly — we remap to test server URL below)
+	pointer, _ := MakeExternalLocationBatch(testSchema, url)
+	defer pointer.Release()
+
+	// Start mock HTTP server
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, ok := storage.data["https://mock.storage"+r.URL.Path]
+		if !ok {
+			w.WriteHeader(404)
+			return
+		}
+		w.Write(body)
+	}))
+	defer server.Close()
+
+	// Remap URL to test server
+	testURL := server.URL + "/basic"
+	pointer2, meta2 := MakeExternalLocationBatch(testSchema, testURL)
+	defer pointer2.Release()
+
+	config := &ExternalLocationConfig{
+		URLValidator: nil, // disable for test server (not HTTPS with valid cert)
+		HTTPClient:   server.Client(),
+	}
+
+	resolved, resolvedMeta, err := ResolveExternalLocation(pointer2, meta2, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resolved.Release()
+
+	if resolved.NumRows() != 1 {
+		t.Fatalf("expected 1 row, got %d", resolved.NumRows())
+	}
+
+	// Check fetch metadata
+	fetchMs, ok := metaGet(resolvedMeta, MetaLocationFetchMs)
+	if !ok {
+		t.Fatal("missing fetch_ms metadata")
+	}
+	if fetchMs == "" {
+		t.Fatal("empty fetch_ms")
+	}
+	source, ok := metaGet(resolvedMeta, MetaLocationSource)
+	if !ok {
+		t.Fatal("missing source metadata")
+	}
+	if source != testURL {
+		t.Fatalf("expected source %q, got %q", testURL, source)
+	}
+}
+
+func TestResolveExternalLocation_NonPointerPassthrough(t *testing.T) {
+	batch := makeBatch(5)
+	defer batch.Release()
+
+	config := &ExternalLocationConfig{URLValidator: nil}
+	resolved, _, err := ResolveExternalLocation(batch, arrow.Metadata{}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.NumRows() != 5 {
+		t.Fatal("non-pointer batch should pass through")
+	}
+}
+
+func TestResolveExternalLocation_NilConfig(t *testing.T) {
+	pointer, meta := MakeExternalLocationBatch(testSchema, "https://mock/test")
+	defer pointer.Release()
+
+	resolved, _, err := ResolveExternalLocation(pointer, meta, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.NumRows() != 0 {
+		t.Fatal("nil config should pass through pointer batch unchanged")
+	}
+}
+
+// ===========================================================================
+// URL validation tests
+// ===========================================================================
+
+func TestHTTPSOnlyValidator_AcceptsHTTPS(t *testing.T) {
+	if err := HTTPSOnlyValidator("https://example.com/data"); err != nil {
+		t.Fatalf("should accept HTTPS: %v", err)
+	}
+}
+
+func TestHTTPSOnlyValidator_RejectsHTTP(t *testing.T) {
+	err := HTTPSOnlyValidator("http://example.com/data")
+	if err == nil {
+		t.Fatal("should reject HTTP")
+	}
+	if !strings.Contains(err.Error(), "HTTPS") {
+		t.Fatalf("error should mention HTTPS: %v", err)
+	}
+}
+
+func TestHTTPSOnlyValidator_RejectsFTP(t *testing.T) {
+	err := HTTPSOnlyValidator("ftp://example.com/data")
+	if err == nil {
+		t.Fatal("should reject FTP")
+	}
+}
+
+func TestResolveExternalLocation_DefaultRejectsHTTP(t *testing.T) {
+	pointer, meta := MakeExternalLocationBatch(testSchema, "http://insecure.example.com/data")
+	defer pointer.Release()
+
+	config := DefaultExternalLocationConfig(newMockStorage())
+	_, _, err := ResolveExternalLocation(pointer, meta, config)
+	if err == nil {
+		t.Fatal("should reject HTTP URL with default validator")
+	}
+	if !strings.Contains(err.Error(), "HTTPS") {
+		t.Fatalf("error should mention HTTPS: %v", err)
+	}
+}
+
+// ===========================================================================
+// Compression tests
+// ===========================================================================
+
+func TestMaybeExternalizeBatch_WithCompression(t *testing.T) {
+	storage := newMockStorage()
+	config := &ExternalLocationConfig{
+		Storage:                   storage,
+		ExternalizeThresholdBytes: 10,
+		Compression:               &Compression{Algorithm: "zstd", Level: 3},
+	}
+	batch := makeBatch(100)
+	defer batch.Release()
+
+	extBatch, _, err := MaybeExternalizeBatch(batch, arrow.Metadata{}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer extBatch.Release()
+
+	if extBatch.NumRows() != 0 {
+		t.Fatal("expected pointer batch")
+	}
+	if storage.lastContentEncoding != "zstd" {
+		t.Fatalf("expected content encoding 'zstd', got %q", storage.lastContentEncoding)
+	}
+
+	// Verify uploaded data is zstd-compressed (magic number 0x28B52FFD)
+	uploaded := storage.data[fmt.Sprintf("https://mock.storage/%d", storage.counter)]
+	if len(uploaded) < 4 || uploaded[0] != 0x28 || uploaded[1] != 0xb5 || uploaded[2] != 0x2f || uploaded[3] != 0xfd {
+		t.Fatal("uploaded data doesn't have zstd magic number")
+	}
+}
+
+func TestMaybeExternalizeBatch_NoCompressionByDefault(t *testing.T) {
+	storage := newMockStorage()
+	config := &ExternalLocationConfig{
+		Storage:                   storage,
+		ExternalizeThresholdBytes: 10,
+	}
+	batch := makeBatch(100)
+	defer batch.Release()
+
+	_, _, err := MaybeExternalizeBatch(batch, arrow.Metadata{}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	uploaded := storage.data[fmt.Sprintf("https://mock.storage/%d", storage.counter)]
+	// Not zstd compressed
+	if len(uploaded) >= 4 && uploaded[0] == 0x28 && uploaded[1] == 0xb5 {
+		t.Fatal("uploaded data should not be zstd-compressed by default")
+	}
+	if storage.lastContentEncoding != "" {
+		t.Fatalf("expected empty content encoding, got %q", storage.lastContentEncoding)
+	}
+}
+
+func TestCompressDecompressRoundtrip(t *testing.T) {
+	storage := newMockStorage()
+	config := &ExternalLocationConfig{
+		Storage:                   storage,
+		ExternalizeThresholdBytes: 10,
+		Compression:               &Compression{Algorithm: "zstd", Level: 3},
+		URLValidator:              nil,
+	}
+	batch := makeBatch(100)
+	defer batch.Release()
+
+	extBatch, extMeta, err := MaybeExternalizeBatch(batch, arrow.Metadata{}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer extBatch.Release()
+
+	// Set up mock HTTP server serving compressed data
+	locationURL, _ := metaGet(extMeta, MetaLocation)
+	compressedData := storage.data[locationURL]
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Encoding", "zstd")
+		w.Write(compressedData)
+	}))
+	defer server.Close()
+
+	// Resolve from test server
+	pointer, meta := MakeExternalLocationBatch(testSchema, server.URL+"/data")
+	defer pointer.Release()
+
+	resolveConfig := &ExternalLocationConfig{
+		URLValidator: nil,
+	}
+	resolved, _, err := ResolveExternalLocation(pointer, meta, resolveConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resolved.Release()
+
+	if resolved.NumRows() != 100 {
+		t.Fatalf("expected 100 rows after decompress, got %d", resolved.NumRows())
+	}
+}
+
+// ===========================================================================
+// Full round-trip test (externalize → serve → resolve)
+// ===========================================================================
+
+func TestFullRoundtrip(t *testing.T) {
+	storage := newMockStorage()
+
+	// Start HTTP server that serves from mock storage
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Extract the storage key from the request path
+		for url, data := range storage.data {
+			if strings.HasSuffix(url, r.URL.Path) {
+				if storage.lastContentEncoding != "" {
+					w.Header().Set("Content-Encoding", storage.lastContentEncoding)
+				}
+				w.Write(data)
+				return
+			}
+		}
+		w.WriteHeader(404)
+	}))
+	defer server.Close()
+
+	// Override storage to use test server URLs
+	testStorage := &redirectStorage{
+		inner:      storage,
+		serverURL:  server.URL,
+	}
+
+	config := &ExternalLocationConfig{
+		Storage:                   testStorage,
+		ExternalizeThresholdBytes: 10,
+		URLValidator:              nil,
+	}
+
+	// Externalize a batch
+	batch := makeBatch(50)
+	defer batch.Release()
+
+	extBatch, extMeta, err := MaybeExternalizeBatch(batch, arrow.Metadata{}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer extBatch.Release()
+
+	if extBatch.NumRows() != 0 {
+		t.Fatal("expected pointer batch")
+	}
+
+	// Resolve
+	resolved, _, err := ResolveExternalLocation(extBatch, extMeta, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resolved.Release()
+
+	if resolved.NumRows() != 50 {
+		t.Fatalf("expected 50 rows, got %d", resolved.NumRows())
+	}
+}
+
+// redirectStorage wraps mockStorage to use a test server URL.
+type redirectStorage struct {
+	inner     *mockStorage
+	serverURL string
+}
+
+func (r *redirectStorage) Upload(data []byte, schema *arrow.Schema, contentEncoding string) (string, error) {
+	url, err := r.inner.Upload(data, schema, contentEncoding)
+	if err != nil {
+		return "", err
+	}
+	// Replace https://mock.storage/ with test server URL
+	path := strings.TrimPrefix(url, "https://mock.storage")
+	return r.serverURL + path, nil
+}
+
+// Ensure interfaces are satisfied
+var _ ExternalStorage = (*mockStorage)(nil)
+var _ ExternalStorage = (*redirectStorage)(nil)
+
+// Suppress unused import warnings
+var _ = zstd.SpeedDefault

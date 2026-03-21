@@ -538,6 +538,17 @@ func (s *Server) serveUnary(ctx context.Context, w io.Writer, req *Request, info
 	}
 	defer resultBatch.Release()
 
+	// Maybe externalize large result batch
+	if s.externalConfig != nil {
+		extBatch, _, extErr := MaybeExternalizeBatch(resultBatch, arrow.Metadata{}, s.externalConfig)
+		if extErr != nil {
+			slog.Error("failed to externalize result batch", "err", extErr)
+		} else if extBatch != resultBatch {
+			resultBatch.Release()
+			resultBatch = extBatch
+		}
+	}
+
 	// Record output stats
 	stats.RecordOutput(resultBatch.NumRows(), batchBufferSize(resultBatch))
 
