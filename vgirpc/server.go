@@ -54,11 +54,12 @@ type methodInfo struct {
 
 // Server is the RPC server that dispatches incoming requests to registered methods.
 type Server struct {
-	methods      map[string]*methodInfo
-	serverID     string
-	serviceName  string
-	dispatchHook DispatchHook
-	debugErrors  bool
+	methods        map[string]*methodInfo
+	serverID       string
+	serviceName    string
+	dispatchHook   DispatchHook
+	debugErrors    bool
+	externalConfig *ExternalLocationConfig
 }
 
 // NewServer creates a new RPC server.
@@ -87,6 +88,13 @@ func (s *Server) ServiceName() string {
 // ServerID returns the server identifier, or empty string if not set.
 func (s *Server) ServerID() string {
 	return s.serverID
+}
+
+// SetExternalLocation configures external storage for large batches.
+// When set, batches exceeding the threshold are uploaded to storage and
+// replaced with pointer batches containing a download URL.
+func (s *Server) SetExternalLocation(config *ExternalLocationConfig) {
+	s.externalConfig = config
 }
 
 // SetDispatchHook registers a hook that is called around each RPC dispatch.
