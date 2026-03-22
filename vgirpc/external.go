@@ -12,7 +12,6 @@ import (
 	"math"
 	"net/http"
 	"net/url"
-	"sort"
 	"sync"
 	"time"
 
@@ -335,7 +334,7 @@ func ResolveExternalLocation(
 	// Read all batches, looking for the data batch
 	var resolvedBatch arrow.RecordBatch
 	for reader.Next() {
-		rec := reader.Record()
+		rec := reader.RecordBatch()
 		// Skip log/error batches
 		recMeta := batchMetadata(rec)
 		_, isLog := metaGet(recMeta, MetaLogLevel)
@@ -623,20 +622,5 @@ func fetchSimple(client *http.Client, rawURL string, cfg *FetchConfig) ([]byte, 
 	}
 
 	return data, nil
-}
-
-// medianDuration returns the median of a sorted duration slice.
-func medianDuration(durations []time.Duration) time.Duration {
-	if len(durations) == 0 {
-		return 0
-	}
-	sorted := make([]time.Duration, len(durations))
-	copy(sorted, durations)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
-	mid := len(sorted) / 2
-	if len(sorted)%2 == 0 {
-		return (sorted[mid-1] + sorted[mid]) / 2
-	}
-	return sorted[mid]
 }
 
