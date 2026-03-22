@@ -744,6 +744,20 @@ func (s *Server) serveStream(ctx context.Context, r io.Reader, w io.Writer, req 
 		inputBatch := inputReader.RecordBatch()
 		slog.Debug("stream: got input batch", "method", info.Name, "rows", inputBatch.NumRows(), "cols", inputBatch.NumCols())
 
+		// Resolve external input batches (exchange streams may receive pointer batches)
+		if s.externalConfig != nil {
+			var inputMeta arrow.Metadata
+			if bwm, ok := inputBatch.(arrow.RecordBatchWithMetadata); ok {
+				inputMeta = bwm.Metadata()
+			}
+			resolvedBatch, _, resolveErr := ResolveExternalLocation(inputBatch, inputMeta, s.externalConfig)
+			if resolveErr != nil {
+				slog.Error("failed to resolve external input", "err", resolveErr)
+			} else {
+				inputBatch = resolvedBatch
+			}
+		}
+
 		// Cast compatible input types if schema doesn't match exactly
 		if inputSchema != nil && !inputBatch.Schema().Equal(inputSchema) {
 			castBatch, castErr := castRecordBatch(inputBatch, inputSchema)
@@ -826,12 +840,24 @@ func (s *Server) serveStream(ctx context.Context, r io.Reader, w io.Writer, req 
 					outputSchema, ab.batch.Columns(), ab.batch.NumRows(), *ab.meta)
 				writeErr = outputWriter.Write(batchWithMeta)
 				batchWithMeta.Release()
+				ab.batch.Release()
 			} else {
+				// Maybe externalize large data batches
+				dataBatch := ab.batch
+				if s.externalConfig != nil && dataBatch.NumRows() > 0 {
+					extBatch, _, extErr := MaybeExternalizeBatch(dataBatch, arrow.Metadata{}, s.externalConfig)
+					if extErr != nil {
+						slog.Error("failed to externalize stream batch", "err", extErr)
+					} else if extBatch != dataBatch {
+						dataBatch.Release()
+						dataBatch = extBatch
+					}
+				}
 				// Data batch — record output stats
-				stats.RecordOutput(ab.batch.NumRows(), batchBufferSize(ab.batch))
-				writeErr = outputWriter.Write(ab.batch)
+				stats.RecordOutput(dataBatch.NumRows(), batchBufferSize(dataBatch))
+				writeErr = outputWriter.Write(dataBatch)
+				dataBatch.Release()
 			}
-			ab.batch.Release()
 			if writeErr != nil {
 				// Release remaining batches and break
 				for _, remaining := range out.batches[i+1:] {
