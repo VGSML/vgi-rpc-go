@@ -28,6 +28,12 @@ func TestCorsPreflightBypassesAuth(t *testing.T) {
 	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "*" {
 		t.Fatalf("expected Access-Control-Allow-Origin=*, got %q", got)
 	}
+	if got := w.Header().Get("Access-Control-Allow-Headers"); got != "Content-Type, Authorization" {
+		t.Fatalf("expected Access-Control-Allow-Headers=Content-Type, Authorization, got %q", got)
+	}
+	if got := w.Header().Get("Access-Control-Expose-Headers"); got != "WWW-Authenticate, X-Request-ID" {
+		t.Fatalf("expected Access-Control-Expose-Headers=WWW-Authenticate, X-Request-ID, got %q", got)
+	}
 }
 
 func TestCorsHeadersOnPost(t *testing.T) {
@@ -42,6 +48,24 @@ func TestCorsHeadersOnPost(t *testing.T) {
 
 	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "https://example.com" {
 		t.Fatalf("expected Access-Control-Allow-Origin=https://example.com, got %q", got)
+	}
+	if got := w.Header().Get("Access-Control-Expose-Headers"); got != "WWW-Authenticate, X-Request-ID" {
+		t.Fatalf("expected Access-Control-Expose-Headers=WWW-Authenticate, X-Request-ID, got %q", got)
+	}
+}
+
+func TestCorsExposeHeadersOnPreflight(t *testing.T) {
+	h := newTestHttpServer(t)
+	h.SetCorsOrigins("*")
+	h.InitPages()
+
+	req := httptest.NewRequest("OPTIONS", "/test_method", nil)
+	req.Header.Set("Origin", "http://example.com")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if got := w.Header().Get("Access-Control-Expose-Headers"); got != "WWW-Authenticate, X-Request-ID" {
+		t.Fatalf("expected Access-Control-Expose-Headers=WWW-Authenticate, X-Request-ID, got %q", got)
 	}
 }
 
