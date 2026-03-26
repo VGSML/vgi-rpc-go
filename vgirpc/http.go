@@ -174,7 +174,7 @@ func (h *HttpServer) addCorsHeaders(w http.ResponseWriter) {
 		w.Header().Set("Access-Control-Allow-Origin", h.corsOrigins)
 		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		w.Header().Set("Access-Control-Expose-Headers", "WWW-Authenticate, X-Request-ID")
+		w.Header().Set("Access-Control-Expose-Headers", "WWW-Authenticate, X-Request-ID, X-VGI-Content-Encoding")
 	}
 }
 
