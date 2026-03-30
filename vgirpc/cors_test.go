@@ -69,6 +69,68 @@ func TestCorsExposeHeadersOnPreflight(t *testing.T) {
 	}
 }
 
+func TestCorsMaxAgeDefault(t *testing.T) {
+	h := newTestHttpServer(t)
+	h.SetCorsOrigins("*")
+	h.InitPages()
+
+	req := httptest.NewRequest("OPTIONS", "/test_method", nil)
+	req.Header.Set("Origin", "http://example.com")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if got := w.Header().Get("Access-Control-Max-Age"); got != "7200" {
+		t.Fatalf("expected Access-Control-Max-Age=7200, got %q", got)
+	}
+}
+
+func TestCorsMaxAgeCustom(t *testing.T) {
+	h := newTestHttpServer(t)
+	h.SetCorsOrigins("*")
+	h.SetCorsMaxAge(3600)
+	h.InitPages()
+
+	req := httptest.NewRequest("OPTIONS", "/test_method", nil)
+	req.Header.Set("Origin", "http://example.com")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if got := w.Header().Get("Access-Control-Max-Age"); got != "3600" {
+		t.Fatalf("expected Access-Control-Max-Age=3600, got %q", got)
+	}
+}
+
+func TestCorsMaxAgeZeroOmitsHeader(t *testing.T) {
+	h := newTestHttpServer(t)
+	h.SetCorsOrigins("*")
+	h.SetCorsMaxAge(0)
+	h.InitPages()
+
+	req := httptest.NewRequest("OPTIONS", "/test_method", nil)
+	req.Header.Set("Origin", "http://example.com")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if got := w.Header().Get("Access-Control-Max-Age"); got != "" {
+		t.Fatalf("expected no Access-Control-Max-Age header, got %q", got)
+	}
+}
+
+func TestCorsMaxAgeNotOnPost(t *testing.T) {
+	h := newTestHttpServer(t)
+	h.SetCorsOrigins("*")
+	h.InitPages()
+
+	req := httptest.NewRequest("POST", "/test_method", nil)
+	req.Header.Set("Content-Type", "application/vnd.apache.arrow.stream")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if got := w.Header().Get("Access-Control-Max-Age"); got != "" {
+		t.Fatalf("expected no Access-Control-Max-Age on POST, got %q", got)
+	}
+}
+
 func TestNoCorsHeadersByDefault(t *testing.T) {
 	h := newTestHttpServer(t)
 	h.InitPages()

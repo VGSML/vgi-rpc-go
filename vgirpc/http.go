@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net/http"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -88,6 +89,7 @@ type HttpServer struct {
 	enableNotFoundPage bool
 
 	corsOrigins string // CORS allowed origins; empty = disabled
+	corsMaxAge  string // Access-Control-Max-Age value; empty = omit
 }
 
 // NewHttpServer creates a new HTTP server wrapping an RPC server.
@@ -102,6 +104,7 @@ func NewHttpServer(server *Server) *HttpServer {
 		tokenTTL:    defaultTokenTTL,
 		maxBodySize: defaultMaxBodySize,
 		prefix:      "",
+		corsMaxAge:  "7200",
 
 		enableLandingPage:  true,
 		enableDescribePage: true,
@@ -123,6 +126,7 @@ func NewHttpServerWithKey(server *Server, signingKey []byte) *HttpServer {
 		tokenTTL:    defaultTokenTTL,
 		maxBodySize: defaultMaxBodySize,
 		prefix:      "",
+		corsMaxAge:  "7200",
 
 		enableLandingPage:  true,
 		enableDescribePage: true,
@@ -168,13 +172,28 @@ func (h *HttpServer) SetCorsOrigins(origins string) {
 	h.corsOrigins = origins
 }
 
+// SetCorsMaxAge sets the Access-Control-Max-Age header value (in seconds)
+// for preflight OPTIONS responses. Pass 0 to omit the header. The default
+// is 7200 (2 hours).
+func (h *HttpServer) SetCorsMaxAge(seconds int) {
+	if seconds > 0 {
+		h.corsMaxAge = strconv.Itoa(seconds)
+	} else {
+		h.corsMaxAge = ""
+	}
+}
+
 // addCorsHeaders adds CORS response headers when cors is enabled.
-func (h *HttpServer) addCorsHeaders(w http.ResponseWriter) {
+// When isOptions is true, the Access-Control-Max-Age header is included.
+func (h *HttpServer) addCorsHeaders(w http.ResponseWriter, isOptions bool) {
 	if h.corsOrigins != "" {
 		w.Header().Set("Access-Control-Allow-Origin", h.corsOrigins)
 		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		w.Header().Set("Access-Control-Expose-Headers", "WWW-Authenticate, X-Request-ID, X-VGI-Content-Encoding")
+		if isOptions && h.corsMaxAge != "" {
+			w.Header().Set("Access-Control-Max-Age", h.corsMaxAge)
+		}
 	}
 }
 
@@ -346,13 +365,13 @@ func (h *HttpServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// CORS preflight — respond before auth or dispatch.
 	if r.Method == http.MethodOptions {
-		h.addCorsHeaders(w)
+		h.addCorsHeaders(w, true)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 
 	// Add CORS headers to all non-OPTIONS responses.
-	h.addCorsHeaders(w)
+	h.addCorsHeaders(w, false)
 
 	if h.zstdEncoder != nil && strings.Contains(r.Header.Get("Accept-Encoding"), "zstd") {
 		cw := &compressResponseWriter{ResponseWriter: w, encoder: h.zstdEncoder}
