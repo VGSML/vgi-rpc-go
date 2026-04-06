@@ -15,6 +15,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"reflect"
 	"strconv"
 	"strings"
@@ -91,6 +92,8 @@ type HttpServer struct {
 
 	corsOrigins string // CORS allowed origins; empty = disabled
 	corsMaxAge  string // Access-Control-Max-Age value; empty = omit
+
+	pkce *oauthPkceState // non-nil when OAuth PKCE browser login is enabled
 }
 
 // NewHttpServer creates a new HTTP server wrapping an RPC server.
@@ -237,9 +240,23 @@ func (h *HttpServer) InitPages() {
 
 	serverID := h.server.serverID
 
+	// Register OAuth PKCE routes when enabled
+	if h.pkce != nil {
+		h.mux.HandleFunc(fmt.Sprintf("GET %s/_oauth/callback", h.prefix), h.handleOAuthCallback)
+		h.mux.HandleFunc(fmt.Sprintf("GET %s/_oauth/logout", h.prefix), h.handleOAuthLogout)
+	}
+
 	if h.enableDescribePage {
 		h.describeHTML = buildDescribeHTML(h.server, h.prefix, name, h.repoURL)
-		h.mux.HandleFunc(fmt.Sprintf("GET %s/describe", h.prefix), h.handleDescribePage)
+		if h.pkce != nil {
+			h.describeHTML = bytes.Replace(h.describeHTML, []byte("</body>"),
+				append(append([]byte{}, h.pkce.userInfoHTML...), []byte("\n</body>")...), 1)
+		}
+		describeHandler := h.handleDescribePage
+		if h.pkce != nil {
+			describeHandler = h.wrapPageWithPkce(h.handleDescribePage)
+		}
+		h.mux.HandleFunc(fmt.Sprintf("GET %s/describe", h.prefix), describeHandler)
 	}
 
 	if h.enableLandingPage {
@@ -248,11 +265,19 @@ func (h *HttpServer) InitPages() {
 			describePath = h.prefix + "/describe"
 		}
 		h.landingHTML = buildLandingHTML(h.prefix, name, serverID, describePath, h.repoURL)
+		if h.pkce != nil {
+			h.landingHTML = bytes.Replace(h.landingHTML, []byte("</body>"),
+				append(append([]byte{}, h.pkce.userInfoHTML...), []byte("\n</body>")...), 1)
+		}
 		landingPattern := fmt.Sprintf("GET %s", h.prefix)
 		if h.prefix == "" {
 			landingPattern = "GET /{$}"
 		}
-		h.mux.HandleFunc(landingPattern, h.handleLandingPage)
+		landingHandler := h.handleLandingPage
+		if h.pkce != nil {
+			landingHandler = h.wrapPageWithPkce(h.handleLandingPage)
+		}
+		h.mux.HandleFunc(landingPattern, landingHandler)
 	}
 
 	if h.enableNotFoundPage {
@@ -331,6 +356,75 @@ func (h *HttpServer) SetOAuthResourceMetadata(m *OAuthResourceMetadata) {
 	h.oauthMetadata = m
 	h.oauthMetadataJSON = data
 	h.wwwAuthenticate = buildWWWAuthenticate(metaURL, m)
+}
+
+// SetOAuthPkce enables browser-based OAuth PKCE login. When both authenticate
+// and OAuthResourceMetadata (with a ClientID) are configured, browser GET
+// requests that fail authentication are redirected to the authorization
+// server's login page instead of returning a 401.
+//
+// Panics if authenticateFunc or oauthMetadata are not set, or if ClientID is empty.
+func (h *HttpServer) SetOAuthPkce(config OAuthPkceConfig) {
+	if h.authenticateFunc == nil {
+		panic("vgirpc: SetOAuthPkce requires SetAuthenticate to be called first")
+	}
+	if h.oauthMetadata == nil {
+		panic("vgirpc: SetOAuthPkce requires SetOAuthResourceMetadata to be called first")
+	}
+	if h.oauthMetadata.ClientID == "" {
+		panic("vgirpc: SetOAuthPkce requires OAuthResourceMetadata.ClientID to be set")
+	}
+	if len(h.oauthMetadata.AuthorizationServers) == 0 {
+		panic("vgirpc: SetOAuthPkce requires at least one authorization server")
+	}
+
+	// Derive session key from signing key
+	sessKey := deriveSessionKey(h.signingKey)
+
+	// Parse resource URL for scheme/host → secureCookie, redirectURI
+	resourceURL, err := url.Parse(h.oauthMetadata.Resource)
+	if err != nil {
+		panic(fmt.Sprintf("vgirpc: invalid resource URL: %v", err))
+	}
+	secureCookie := resourceURL.Scheme == "https"
+	redirectURI := fmt.Sprintf("%s://%s%s/_oauth/callback", resourceURL.Scheme, resourceURL.Host, h.prefix)
+
+	// Build OIDC discovery for first authorization server
+	oidcDiscovery := createOIDCDiscovery(h.oauthMetadata.AuthorizationServers[0])
+
+	// Scope
+	scope := config.Scope
+	if scope == "" {
+		scope = "openid email"
+	}
+
+	// Build allowed origins map
+	allowedOrigins := make(map[string]bool)
+	allowedOrigins[defaultAllowedReturnOrigin] = true
+	for _, origin := range config.AllowedReturnOrigins {
+		allowedOrigins[origin] = true
+	}
+
+	// Build user info HTML
+	userInfoHTML := buildUserInfoHTML(h.prefix)
+
+	// Chain cookie authenticate with the original auth func
+	origAuth := h.authenticateFunc
+	h.authenticateFunc = ChainAuthenticate(origAuth, CookieAuthenticate(origAuth, authCookieName))
+
+	h.pkce = &oauthPkceState{
+		sessionKey:           sessKey,
+		oidcDiscovery:        oidcDiscovery,
+		clientID:             h.oauthMetadata.ClientID,
+		clientSecret:         h.oauthMetadata.ClientSecret,
+		useIDToken:           h.oauthMetadata.UseIDTokenAsBearer,
+		secureCookie:         secureCookie,
+		redirectURI:          redirectURI,
+		prefix:               h.prefix,
+		scope:                scope,
+		allowedReturnOrigins: allowedOrigins,
+		userInfoHTML:         userInfoHTML,
+	}
 }
 
 // authenticate runs the registered AuthenticateFunc (if any) and writes
