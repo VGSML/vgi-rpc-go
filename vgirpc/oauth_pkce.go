@@ -523,27 +523,26 @@ func CookieAuthenticate(inner AuthenticateFunc, cookieName string) AuthenticateF
 // Error HTML page
 // ---------------------------------------------------------------------------
 
-const oauthErrorHTMLTemplate = `<!DOCTYPE html>
+var oauthErrorHTMLTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Authentication Error</title>
-<style>
-  body { font-family: system-ui, -apple-system, sans-serif; max-width: 600px;
-         margin: 0 auto; padding: 60px 20px; color: #2c2c1e; text-align: center;
-         background: #faf8f0; }
-  h1 { color: #8b0000; }
-  .detail { background: #f0ece0; padding: 12px 20px; border-radius: 6px;
-             font-family: monospace; margin: 20px 0; text-align: left; }
-  a { color: #2d5016; }
-</style>
+<title>Authentication Error &mdash; vgi-rpc</title>
+` + fontImports + `
+` + errorPageStyle + `
 </head>
 <body>
+<div class="logo">
+  <img src="` + logoURL + `" alt="vgi-rpc logo">
+</div>
 <h1>Authentication Error</h1>
 <p>%s</p>
 %s
 <p><a href="%s">Try again</a></p>
+<footer>
+  Powered by <a href="https://vgi-rpc.query.farm"><code>vgi-rpc</code></a>
+</footer>
 </body>
 </html>`
 
@@ -887,6 +886,26 @@ func (h *HttpServer) pkceRedirectToOAuth(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(http.StatusFound)
 }
 
+// isJWTExpired decodes a JWT's exp claim and returns true if the token is expired.
+// Returns false if the token is not a JWT or can't be decoded.
+func isJWTExpired(token string) bool {
+	parts := strings.SplitN(token, ".", 3)
+	if len(parts) < 2 {
+		return false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return false
+	}
+	var claims struct {
+		Exp *float64 `json:"exp"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil || claims.Exp == nil {
+		return false
+	}
+	return time.Now().Unix() >= int64(*claims.Exp)
+}
+
 // pkceEarlyReturnRedirect checks if the user is already authenticated and has
 // a _vgi_return_to parameter. If so, redirects with the token in the URL
 // fragment. Returns true if a redirect was issued.
@@ -902,6 +921,11 @@ func (h *HttpServer) pkceEarlyReturnRedirect(w http.ResponseWriter, r *http.Requ
 	tokenCookie, err := r.Cookie(authCookieName)
 	if err != nil || tokenCookie.Value == "" {
 		return false // Not authenticated — let normal flow handle it
+	}
+
+	// Don't redirect with an expired token — let the OAuth flow run again
+	if isJWTExpired(tokenCookie.Value) {
+		return false
 	}
 
 	// Already authenticated with a return_to — redirect back with the token
